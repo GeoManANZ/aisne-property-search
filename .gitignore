@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Browsers
+.browsers/
+
+# Scan artifacts (large HTML dumps)
+scans/
+
+# Images/screenshots
+*.png
+
+# Local DB (committed as schema, not data)
+# listings.db

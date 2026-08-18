@@ -1,0 +1,6 @@
+# Blocked sites to test with the residential engine (name | url)
+Orpi Laon immeuble | https://www.orpi.com/annonce-vente-immeuble-t5-laon-02000-8ab73979-6aa3-41bd-bb2f-89630451e57b/
+SeLoger Aisne immeubles | https://www.seloger.com/recherche/achat/immeuble/hauts-de-france/aisne-02/ad06fr2
+Logic-Immo Aisne immeubles | https://www.logic-immo.com/recherche-immo/vente/immeuble/hauts-de-france/aisne-02/ad06fr2
+Superimmo Aisne immeubles | https://www.superimmo.com/vente/immeuble/aisne-02/
+Zilek Soissons immeuble | https://www.zilek.com/immeuble-a-vendre/02200-soissons/354155676.htm

@@ -1,0 +1,5 @@
+# ACCESSIBLE PORTALS — test WARP + browser for these
+Zilek Soissons listing | https://zilek.com/immeuble-a-vendre/02200-soissons/354155676.htm
+FNAIM Aisne immeubles search | https://www.fnaim.fr/liste-annonces-immobilieres/17-acheter-immeuble-aisne-02.htm
+iad Aisne immeubles | https://www.iadfrance.fr/annonces/aisne-02/vente/immeuble
+ParuVendu Soissons immeubles | https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/
