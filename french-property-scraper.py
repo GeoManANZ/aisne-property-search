@@ -312,6 +312,14 @@ try:
 except ImportError:
     pass
 
+# Camoufox — patched Firefox anti-detect browser (a 2nd, distinct fingerprint)
+_CAMOUFOX_AVAILABLE = False
+try:
+    import camoufox  # noqa: F401  (presence check)
+    _CAMOUFOX_AVAILABLE = True
+except ImportError:
+    pass
+
 
 def scrape_via_stealth(
     url: str,
@@ -527,6 +535,163 @@ def scrape_via_residential(url, timeout_s=40, max_proxies=4):
 
 
 # ---------------------------------------------------------------------------
+# ENGINE 6/7 SHARED — Behavioural layer (human-like interaction)
+# ---------------------------------------------------------------------------
+# Used by every browser engine.  Makes a headless browser look human:
+#   - warm-up: load the site homepage first, then the target (real users
+#     arrive via the home/search page, not a direct jump)
+#   - Bézier mouse movements (not instant teleport clicks)
+#   - natural scroll with jitter
+#   - FR locale + realistic viewport already set by the caller
+#
+# These reduce the behavioural risk score that WAFs (especially DataDome and
+# hCaptcha) compute.  Individually they rarely flip a block, but combined
+# with a residential IP + clean fingerprint they push borderline cases over.
+
+def _bezier_points(x0, y0, x1, y1, n=12):
+    """Return n points on a curved path from (x0,y0) to (x1,y1).
+
+    Uses a quadratic Bézier with a random control point offset, so the
+    mouse path curves naturally instead of moving in a straight line
+    (straight-line mouse movement is a strong automation signal).
+    """
+    import random
+    # control point pulled perpendicular to the straight path
+    cx = (x0 + x1) / 2 + random.uniform(-80, 80)
+    cy = (y0 + y1) / 2 + random.uniform(-60, 60)
+    pts = []
+    for i in range(n + 1):
+        t = i / n
+        # quadratic bezier: B(t) = (1-t)^2 P0 + 2(1-t)t C + t^2 P1
+        bx = (1 - t) ** 2 * x0 + 2 * (1 - t) * t * cx + t ** 2 * x1
+        by = (1 - t) ** 2 * y0 + 2 * (1 - t) * t * cy + t ** 2 * y1
+        pts.append((bx, by))
+    return pts
+
+
+def _human_mouse_move(page, x, y):
+    """Move the mouse to (x,y) along a Bézier path with timing jitter."""
+    import random
+    import time as _t
+    try:
+        start = page.evaluate("() => ({x: window.innerWidth/2, y: window.innerHeight*0.7})")
+        pts = _bezier_points(start["x"], start["y"], x, y)
+        for px, py in pts:
+            page.mouse.move(px, py)
+            _t.sleep(random.uniform(0.008, 0.035))  # 8–35ms jitter per step
+    except Exception:
+        # if anything fails, just teleport (don't let behaviour break the fetch)
+        page.mouse.move(x, y)
+
+
+def _human_scroll(page, total=None, steps=5):
+    """Scroll down the page in natural-sized steps with pauses."""
+    import random
+    import time as _t
+    try:
+        height = page.evaluate("document.body.scrollHeight") or 2000
+        if total is None:
+            total = min(height * 0.7, 1500)
+        step = total / steps
+        for _ in range(steps):
+            page.mouse.wheel(0, step + random.uniform(-20, 20))
+            _t.sleep(random.uniform(0.15, 0.5))
+    except Exception:
+        pass
+
+
+def _human_warmup(page, domain):
+    """Load the site root first so we arrive like a real user, not a bot."""
+    import time as _t
+    try:
+        page.goto(f"https://{domain}/", wait_until="domcontentloaded", timeout=20000)
+        _t.sleep(random.uniform(1.0, 2.5))
+        _human_scroll(page, steps=3)
+    except Exception:
+        pass  # warm-up is best-effort; proceed to target regardless
+
+
+# ---------------------------------------------------------------------------
+# ENGINE 7 — Camoufox (Firefox anti-detect) + behavioural layer
+# ---------------------------------------------------------------------------
+
+def scrape_via_camoufox(url, timeout_s=45, use_proxy=False, warmup=True):
+    """Fetch a URL through Camoufox — a patched Firefox with a unique
+    fingerprint (navigator.webdriver=false natively, realistic canvas/UA).
+
+    Camoufox gives us a SECOND browser engine with a totally different
+    fingerprint from our Chromium stealth path.  Some WAFs (DataDome,
+    hCaptcha risk-scoring) fingerprint Chromium harder than Firefox; having
+    both lets us pick whichever the site is least aggressive towards.
+
+    Behavioural layer is applied: warm-up on the site root, Bézier mouse
+    movements, natural scroll.
+
+    Args:
+        url:       target URL
+        timeout_s: max load time
+        use_proxy: route through a Webshare residential IP (sticky per call)
+        warmup:    do the homepage→target warm-up (recommended True)
+
+    Returns dict with success/rawHtml/status/error/blocked keys.
+    """
+    import time
+    import random
+    if not _CAMOUFOX_AVAILABLE:
+        return {"success": False, "rawHtml": "", "status": 0,
+                "error": "camoufox not installed", "blocked": False}
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc
+
+    # Optional residential proxy (sticky — one IP for this whole session)
+    proxy_conf = None
+    if use_proxy and WEBSHARE_PROXY_LIST:
+        ip = random.choice(WEBSHARE_PROXY_LIST)
+        # Credentials MUST be passed separately (Playwright rejects creds
+        # embedded in the server URL — ERR_INVALID_AUTH_CREDENTIALS).
+        proxy_conf = {"server": f"http://{ip}", "username": WEBSHARE_PROXY_USER,
+                      "password": WEBSHARE_PROXY_PASS}
+
+    try:
+        from camoufox.sync_api import Camoufox
+
+        launch = {"headless": True, "locale": "fr-FR", "humanize": True,
+                  "geoip": True}  # geoip=True ties locale/timezone to the proxy IP
+        if proxy_conf:
+            launch["proxy"] = proxy_conf
+
+        with Camoufox(**launch) as browser:
+            page = browser.new_page()
+
+            if warmup:
+                _human_warmup(page, domain)
+
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+            # let any challenge / async content settle
+            for _ in range(4):
+                title = page.title()
+                if "un instant" in title.lower() or "just a moment" in title.lower() \
+                   or "humain" in title.lower():
+                    time.sleep(2.5)
+                else:
+                    break
+            # gentle human scroll to trigger any lazy content
+            _human_scroll(page, steps=4)
+            time.sleep(1.0)
+
+            html = page.content()
+            status = 200
+            blocked = is_cloudflare_block(html, status)
+            return {"success": not blocked, "rawHtml": html, "status": status,
+                    "error": None if not blocked else "block page via camoufox",
+                    "blocked": blocked, "proxy": proxy_conf}
+    except Exception as e:
+        return {"success": False, "rawHtml": "", "status": 0,
+                "error": f"camoufox error: {type(e).__name__}: {str(e)[:120]}",
+                "blocked": False}
+
+
+# ---------------------------------------------------------------------------
 # BLOCK DETECTION — shared by all engines
 # ---------------------------------------------------------------------------
 
@@ -737,6 +902,7 @@ def scan_url(
     timeout_s: int = 25,
     log_lines: list[str] | None = None,
     stealth_use_warp: bool = True,
+    camoufox_proxy: bool = False,
 ) -> dict:
     """Scan a single property URL using the requested engines.
 
@@ -825,6 +991,14 @@ def scan_url(
                 html = crash_data.get("rawHtml", "")
                 status = crash_data.get("status", 0)
 
+            elif engine == "camoufox":            # ENGINE 8 — Firefox anti-detect + behaviour
+                log_lines.append(f"    Calling Camoufox (Firefox anti-detect, warm-up + behaviour, "
+                                 f"proxy={'yes' if camoufox_proxy else 'no'})...")
+                crash_data = scrape_via_camoufox(url, timeout_s=timeout_s,
+                                                 use_proxy=camoufox_proxy, warmup=True)
+                html = crash_data.get("rawHtml", "")
+                status = crash_data.get("status", 0)
+
             # Analyse
             blocked = is_cloudflare_block(html, status)
             diag = diagnosis(html, status, engine)
@@ -904,6 +1078,7 @@ def scan_batch(
     output_dir: Path = None,
     delay_s: float = 2.0,
     stealth_use_warp: bool = True,
+    camoufox_proxy: bool = False,
 ) -> list[dict]:
     """Scan multiple URLs; urls is a list of {"name": str, "url": str} dicts.
 
@@ -927,7 +1102,8 @@ def scan_batch(
         log_all.append(f"--- [{idx}/{len(urls)}] {name} ---")
 
         result = scan_url(url, engines=engines, log_lines=log_all,
-                          stealth_use_warp=stealth_use_warp)
+                          stealth_use_warp=stealth_use_warp,
+                          camoufox_proxy=camoufox_proxy)
         result["name"] = name
 
         # Save raw HTML if we got it
@@ -974,12 +1150,14 @@ if __name__ == "__main__":
                     "(direct / WARP / Lightpanda / Playwright stealth / Webshare HTTP / Webshare stealth)"
     )
     parser.add_argument("--url", help="Single URL to scan")
-    parser.add_argument("--engine", choices=["direct", "warp", "lightpanda", "stealth", "residential", "webshare", "webshare-stealth", "cascade"],
+    parser.add_argument("--engine", choices=["direct", "warp", "lightpanda", "stealth", "residential", "webshare", "webshare-stealth", "camoufox", "cascade"],
                         default="cascade", help="Engine to use (default: cascade = all in order)")
     parser.add_argument("--input", help="File with URLs to scan (name | url per line, or JSON)")
     parser.add_argument("--output", help="Output directory override")
     parser.add_argument("--stealth-no-warp", action="store_true",
-                        help="Stealth engine: don't route through WARP proxy")
+                        help="stealth engine: don't route through WARP (use direct IP)")
+    parser.add_argument("--camoufox-proxy", action="store_true",
+                        help="camoufox engine: route through a Webshare residential IP (sticky)")
     args = parser.parse_args()
 
     if not _PYTHON_SOCKS_AVAILABLE:
@@ -1005,7 +1183,8 @@ if __name__ == "__main__":
                 urls.append({"name": f"line-{len(urls)+1}", "url": line})
         out_dir = Path(args.output) if args.output else None
         results = scan_batch(urls, engines=engines, output_dir=out_dir,
-                             stealth_use_warp=not args.stealth_no_warp)
+                             stealth_use_warp=not args.stealth_no_warp,
+                             camoufox_proxy=args.camoufox_proxy)
         print(f"\nScanned {len(results)} URLs")
         for r in results:
             status = "✅ OK" if not r["blocked"] else "❌ BLOCKED"
@@ -1015,9 +1194,10 @@ if __name__ == "__main__":
         print(f"\nResults saved to: {out_dir or 'scans/'}")
 
     elif args.url:
-        engines = engines if args.engine != "cascade" else ["direct", "warp", "lightpanda", "stealth"]
+        engines = engines if args.engine != "cascade" else ["direct", "warp", "lightpanda", "stealth", "webshare", "webshare-stealth"]
         result = scan_url(args.url, engines=engines,
-                          stealth_use_warp=not args.stealth_no_warp)
+                          stealth_use_warp=not args.stealth_no_warp,
+                          camoufox_proxy=args.camoufox_proxy)
         status = "✅ OK" if not result["blocked"] else "❌ BLOCKED"
         print(f"\n{status}  engine={result['engine']}  |  {result['url']}")
         print(f"  price={result['data'].get('price_eur')}  "
@@ -1037,7 +1217,8 @@ if __name__ == "__main__":
             {"name": "Logic-Immo Aisne (was blocked)", "url": "https://www.logic-immo.com/recherche-immo/vente/immeuble/hauts-de-france/aisne-02/ad06fr2"},
         ]
         results = scan_batch(demo_urls, engines=engines,
-                             stealth_use_warp=not args.stealth_no_warp)
+                             stealth_use_warp=not args.stealth_no_warp,
+                             camoufox_proxy=args.camoufox_proxy)
         print("\n--- DEMO RESULTS ---")
         for r in results:
             status = "✅ OK" if not r["blocked"] else "❌ BLOCKED"
