@@ -757,6 +757,77 @@ def diagnosis(html: str, status: int, engine: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# CHALLENGE CLASSIFIER — detect which anti-bot we hit, route to the best engine
+# ---------------------------------------------------------------------------
+
+def classify_challenge(html: str, status: int) -> str:
+    """Return a short label for the anti-bot protection present in a response.
+
+    Returns one of:
+      'datadome'   — DataDome CAPTCHA (SeLoger, Logic-Immo)
+      'hcaptcha'   — hCaptcha checkbox/challenge (Superimmo)
+      'cloudflare' — Cloudflare challenge ("Just a moment" / "Un instant…")
+      'turnstile'  — Cloudflare Turnstile (Zilek)
+      'hard403'    — bare 403 (IP-reputation block, no challenge page)
+      'ok'         — real content, not a block
+      'unknown'    — couldn't classify
+
+    The classifier inspects headers/body markers.  The scan_url() cascade uses
+    this to JUMP straight to the strongest engine for the detected challenge
+    type instead of burning the full cascade (early routing).
+    """
+    if status in (403, 451):
+        return "hard403"
+    low = html.lower()
+
+    # DataDome — distinctive iframe + host
+    if "datadome" in low or "geo.captcha-delivery.com" in low \
+       or "x-datadome" in low or "datadome" in html:
+        return "datadome"
+    # hCaptcha — the widget + sitekey
+    if "hcaptcha.com" in low or "h-captcha" in low or "data-sitekey" in low:
+        return "hcaptcha"
+    # Cloudflare Turnstile (Zilek) — turnstile token / cf-challenge
+    if "turnstile" in low or "cf-challenge" in low:
+        return "turnstile"
+    # Generic Cloudflare interstitial
+    if "just a moment" in low or "un instant" in low or "checking your browser" in low \
+       or "verify you are human" in low or "attention required" in low \
+       or "cf-chl" in low or "__cf_chl" in low:
+        return "cloudflare"
+    if "prouvez que" in low or "êtes un humain" in low or "vous n'êtes pas un robot" in low:
+        return "hcaptcha"
+    if status == 200 and len(html) > 3000 and not is_cloudflare_block(html, status):
+        return "ok"
+    return "unknown"
+
+
+# Best engine to try first for each challenge type (early routing).
+# Fast/cheap first, escalate to residential/stealth only as needed.
+_CHALLENGE_ROUTING = {
+    "datadome":   ["camoufox", "webshare-stealth", "stealth"],  # strongest first
+    "hcaptcha":   ["camoufox", "webshare-stealth", "stealth"],
+    "turnstile":  ["camoufox", "webshare-stealth", "stealth"],
+    "cloudflare": ["stealth", "webshare", "webshare-stealth", "camoufox"],
+    "hard403":    ["webshare", "webshare-stealth", "camoufox"],  # IP block → residential
+    "ok":         [],
+    "unknown":    ["webshare", "stealth", "camoufox"],
+}
+
+
+def route_engines(challenge_type: str, full_cascade: list[str]) -> list[str]:
+    """Return an optimised engine order for the detected challenge type.
+
+    If we already know the challenge, use the targeted routing table
+    (most-likely-to-succeed engines first).  Otherwise fall back to the
+    provided full cascade.
+    """
+    if challenge_type in _CHALLENGE_ROUTING and _CHALLENGE_ROUTING[challenge_type]:
+        return _CHALLENGE_ROUTING[challenge_type]
+    return full_cascade
+
+
+# ---------------------------------------------------------------------------
 # HTML → STRUCTURED DATA EXTRACTION
 # ---------------------------------------------------------------------------
 
@@ -939,6 +1010,37 @@ def scan_url(
     log_lines.append(f"[{datetime.now(timezone.utc).isoformat()}Z] Scanning: {url}")
     log_lines.append(f"  Engines: {', '.join(engines)}")
     log_lines.append("")
+
+    # ---- EARLY ROUTING (challenge classifier) ------------------------------
+    # Do ONE cheap detection pass (direct HTTP) to learn which anti-bot the
+    # site uses, then reorder the cascade so the strongest engine for that
+    # challenge type runs FIRST instead of burning every cheap engine first.
+    # If the cheap probe already returns real content, we're done immediately.
+    probe_html, probe_status = "", 0
+    try:
+        _probe = DirectSession()
+        _pr = _probe.get(url, timeout=min(timeout_s, 15))
+        probe_html, probe_status = _pr.text, _pr.status_code
+    except Exception:
+        pass
+
+    challenge = classify_challenge(probe_html, probe_status)
+    if challenge == "ok" and len(probe_html) > 3000:
+        log_lines.append(f"  → direct probe OK ({len(probe_html)} chars) — no challenge")
+        crash_data = {"success": True, "markdown": "", "rawHtml": probe_html,
+                      "status": probe_status, "error": None}
+        extracted = extract_property_data(probe_html, url)
+        return {
+            "url": url, "engine": "direct", "status": probe_status,
+            "blocked": False, "html_length": len(probe_html),
+            "data": extracted, "raw_html": probe_html,
+            "diagnostics": log_lines, "scan_time_s": 0.0,
+        }
+    elif challenge != "unknown":
+        ordered = route_engines(challenge, engines)
+        log_lines.append(f"  → challenge classifier: {challenge} — routing to: "
+                         f"{', '.join(ordered)}")
+        engines = ordered
 
     crash_data = {}
     crash_reason = ""
