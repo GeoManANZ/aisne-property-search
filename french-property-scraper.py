@@ -171,6 +171,49 @@ class WarpSession:
         return self._session.get(url, proxies=self._proxies, **kwargs)
 
 
+class WebshareSession:
+    """HTTP GET routed through a Webshare residential proxy.
+
+    This is ENGINE 6 — the fast, JS-free Webshare variant.  It does NOT
+    render JavaScript; it just fetches HTML over a residential egress IP.
+    Use it for sites that block on IP reputation but don't need JS (i.e. the
+    hard IP-blocks like Orpi's Cloudflare gate when the page HTML is server-
+    rendered).
+
+    Webshare proxies are HTTP proxies with per-IP credentials, format:
+        http://USER:PASS@ip:port
+    On the free plan we rotate over the fixed IP list in proxy_config.py.
+    If you later upgrade to a *rotating residential* plan, you can instead
+    point this at the single rotating gateway `p.webshare.io:80` and every
+    request gets a fresh IP automatically.
+    """
+
+    def __init__(self):
+        self._session = requests.Session()
+        self._session.headers.update(_BROWSER_HEADERS)
+        self._proxies = None
+        self._proxy_list = list(WEBSHARE_PROXY_LIST)
+
+    @property
+    def available(self) -> bool:
+        return bool(WEBSHARE_PROXY_LIST) and bool(WEBSHARE_PROXY_USER)
+
+    def _next_proxy(self) -> dict:
+        """Pick the next proxy (round-robin over the free IP list)."""
+        if not self._proxy_list:
+            self._proxy_list = list(WEBSHARE_PROXY_LIST)
+        ip = self._proxy_list.pop(0)
+        self._proxy_list.append(ip)  # rotate
+        url = f"http://{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{ip}"
+        return {"http": url, "https": url}
+
+    def get(self, url: str, timeout: int = 20, **kwargs) -> requests.Response:
+        if not self.available:
+            raise RuntimeError("No Webshare proxies configured")
+        kwargs.setdefault("timeout", timeout)
+        return self._session.get(url, proxies=self._next_proxy(), **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # ENGINE 3 — Lightpanda headless browser via fastCRW
 # ---------------------------------------------------------------------------
@@ -707,7 +750,7 @@ def scan_url(
     if log_lines is None:
         log_lines = []
     if engines is None:
-        engines = ["direct", "warp", "lightpanda", "stealth", "residential"]
+        engines = ["direct", "warp", "lightpanda", "stealth", "webshare", "webshare-stealth"]
 
     log_lines.append(f"[{datetime.now(timezone.utc).isoformat()}Z] Scanning: {url}")
     log_lines.append(f"  Engines: {', '.join(engines)}")
@@ -758,6 +801,25 @@ def scan_url(
                 status = crash_data.get("status", 0)
 
             elif engine == "residential":
+                log_lines.append(f"    Calling stealth Chromium + Webshare residential IPs...")
+                crash_data = scrape_via_residential(url, timeout_s=timeout_s)
+                html = crash_data.get("rawHtml", "")
+                status = crash_data.get("status", 0)
+
+            elif engine == "webshare":           # ENGINE 6 — fast HTTP via Webshare
+                if not WebshareSession().available:
+                    log_lines.append(f"    SKIP — no Webshare proxies configured")
+                    continue
+                sess = WebshareSession()
+                resp = sess.get(url, timeout=timeout_s)
+                html = resp.text
+                status = resp.status_code
+                log_lines.append(f"    Status: {status}, size: {len(html)} chars (via Webshare HTTP)")
+                crash_data = {"success": True, "markdown": "", "rawHtml": html,
+                              "status": status, "error": None}
+                crash_reason = ""
+
+            elif engine == "webshare-stealth":   # ENGINE 7 — stealth Chromium via Webshare
                 log_lines.append(f"    Calling stealth Chromium + Webshare residential IPs...")
                 crash_data = scrape_via_residential(url, timeout_s=timeout_s)
                 html = crash_data.get("rawHtml", "")
@@ -849,7 +911,7 @@ def scan_batch(
     to disk per URL; structured data is consolidated into results.json.
     """
     if engines is None:
-        engines = ["direct", "warp", "lightpanda", "stealth", "residential"]
+        engines = ["direct", "warp", "lightpanda", "stealth", "webshare", "webshare-stealth"]
     if output_dir is None:
         scan_id = hashlib.md5(str(datetime.now(timezone.utc)).encode()).hexdigest()[:8]
         output_dir = SCAN_DIR / scan_id
@@ -909,10 +971,10 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         description="French property scraper — multi-engine "
-                    "(direct / WARP / Lightpanda / Playwright stealth)"
+                    "(direct / WARP / Lightpanda / Playwright stealth / Webshare HTTP / Webshare stealth)"
     )
     parser.add_argument("--url", help="Single URL to scan")
-    parser.add_argument("--engine", choices=["direct", "warp", "lightpanda", "stealth", "residential", "cascade"],
+    parser.add_argument("--engine", choices=["direct", "warp", "lightpanda", "stealth", "residential", "webshare", "webshare-stealth", "cascade"],
                         default="cascade", help="Engine to use (default: cascade = all in order)")
     parser.add_argument("--input", help="File with URLs to scan (name | url per line, or JSON)")
     parser.add_argument("--output", help="Output directory override")
@@ -924,7 +986,7 @@ if __name__ == "__main__":
         print("⚠ PySocks not installed — WARP engine will be skipped. Install: pip install PySocks")
 
     if args.engine == "cascade":
-        engines = ["direct", "warp", "lightpanda", "stealth", "residential"]
+        engines = ["direct", "warp", "lightpanda", "stealth", "webshare", "webshare-stealth"]
     else:
         engines = [args.engine]
 
