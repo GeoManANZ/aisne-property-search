@@ -188,24 +188,37 @@ class WebshareSession:
     request gets a fresh IP automatically.
     """
 
-    def __init__(self):
+    def __init__(self, sticky: bool = False):
         self._session = requests.Session()
         self._session.headers.update(_BROWSER_HEADERS)
         self._proxies = None
         self._proxy_list = list(WEBSHARE_PROXY_LIST)
+        self._sticky = sticky          # pin one IP for the whole session
+        self._sticky_proxy = None      # the pinned IP (once chosen)
 
     @property
     def available(self) -> bool:
         return bool(WEBSHARE_PROXY_LIST) and bool(WEBSHARE_PROXY_USER)
 
     def _next_proxy(self) -> dict:
-        """Pick the next proxy (round-robin over the free IP list)."""
+        """Pick the next proxy (round-robin over the free IP list).
+
+        In sticky mode the first choice is pinned and reused for every
+        subsequent request — so a challenge request and the detail scrape of
+        the same URL share one IP, which many WAFs expect (a single visitor
+        from one IP, not rotating mid-session).
+        """
+        if self._sticky and self._sticky_proxy:
+            return self._sticky_proxy
         if not self._proxy_list:
             self._proxy_list = list(WEBSHARE_PROXY_LIST)
         ip = self._proxy_list.pop(0)
         self._proxy_list.append(ip)  # rotate
         url = f"http://{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{ip}"
-        return {"http": url, "https": url}
+        proxy = {"http": url, "https": url}
+        if self._sticky and self._sticky_proxy is None:
+            self._sticky_proxy = proxy
+        return proxy
 
     def get(self, url: str, timeout: int = 20, **kwargs) -> requests.Response:
         if not self.available:
@@ -514,7 +527,12 @@ def scrape_via_residential(url, timeout_s=40, max_proxies=4):
                                                   viewport={"width": 1366, "height": 900})
                     page = context.new_page()
                     Stealth().apply_stealth_sync(page)
+                    # Behavioural warm-up: hit the site root first, then target,
+                    # all on the SAME proxy IP (sticky — a single visitor from
+                    # one IP, which is how real users arrive).
+                    _human_warmup(page, urllib.parse.urlparse(url).netloc)
                     page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
+                    _human_scroll(page, steps=4)
                     page.wait_for_timeout(6000)
                     html = page.content()
                     status = 200
@@ -976,7 +994,7 @@ def scan_url(
                 if not WebshareSession().available:
                     log_lines.append(f"    SKIP — no Webshare proxies configured")
                     continue
-                sess = WebshareSession()
+                sess = WebshareSession(sticky=True)   # pin one IP for this URL's session
                 resp = sess.get(url, timeout=timeout_s)
                 html = resp.text
                 status = resp.status_code
