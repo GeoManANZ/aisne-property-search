@@ -521,6 +521,39 @@ def ladder(
         log_lines.append(f"  Scanned {len(scanned)} detail pages")
         log_lines.append("")
 
+    # ---- Persist to listings DB (SQLite) ----------------------------------
+    # Every run upserts what it found so listings.db accumulates history.
+    # Detail-scan results are richer, so we prefer those; otherwise fall back
+    # to the consolidated (search-card) fields.
+    try:
+        from listings_db import ListingsDB
+        db = ListingsDB(Path(__file__).parent / "listings.db")
+        db_records = []
+        detail_by_url = {r.get("url"): r.get("data", {})
+                         for r in (scanned if scan_details_for else [])
+                         if r.get("url")}
+        for item in consolidated:
+            url = item.get("url", "")
+            if not url:
+                continue
+            detail = detail_by_url.get(url, {})
+            db_records.append({
+                "url": url,
+                "source": item.get("source") or detail.get("source"),
+                "title": detail.get("title") or item.get("title"),
+                "price_eur": detail.get("price_eur") or item.get("price"),
+                "surface_m2": detail.get("surface_m2") or item.get("surface_m2"),
+                "dpe_energy": detail.get("dpe_energy"),
+                "location": detail.get("location") or item.get("location"),
+                "agency": detail.get("agency"),
+                "description": detail.get("description_snippet") or item.get("raw_text"),
+            })
+        db.bulk_upsert(db_records)
+        db.close()
+        log_lines.append(f"  DB: upserted {len(db_records)} records (running total in listings.db)")
+    except Exception as e:
+        log_lines.append(f"  DB: skipped — {type(e).__name__}: {e}")
+
     # Save full log
     (out_dir / "ladder_log.txt").write_text("\n".join(log_lines), encoding="utf-8")
 
