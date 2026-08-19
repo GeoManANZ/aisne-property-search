@@ -743,6 +743,90 @@ def scrape_via_camoufox(url, timeout_s=45, use_proxy=False, warmup=True):
 
 
 # ---------------------------------------------------------------------------
+# ENGINE 9 — DataDome bypass via 2Captcha (SeLoger / Logic-Immo)
+# ---------------------------------------------------------------------------
+
+def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
+    """Bypass DataDome (SeLoger / Logic-Immo) by solving it via 2Captcha.
+
+    DataDome is NOT an image captcha — it's a behavioural + token system.
+    The flow:
+      1. fetch the URL through a proxy → DataDome redirects to a
+         geo.captcha-delivery.com challenge URL
+      2. submit that challenge URL to 2Captcha (with the SAME proxy + UA so
+         the returned datadome cookie matches our egress IP)
+      3. re-fetch the URL carrying the datadome cookie → real listing HTML
+
+    This is a PAID service (~$0.003/solve).  Used ONLY when the earlier
+    engines all failed with a DataDome block (early-routing classifier sends
+    'datadome' here).  Conservative — one solve per URL.
+
+    Args:
+        url:       target SeLoger/Logic-Immo URL
+        timeout_s: per-request timeout
+        user_agent: UA to use (must match across fetch+solve)
+        proxy:     "ip:port" Webshare proxy (optional; if None we still try
+                   with the direct egress — DataDome may reject, but worth it
+                   when no proxy is available)
+
+    Returns dict with success/rawHtml/status/error/blocked keys.
+    """
+    import re
+    from twocaptcha_client import solve_datadome
+
+    if user_agent is None:
+        user_agent = _BROWSER_HEADERS["User-Agent"]
+
+    # Build the requests session + optional proxy
+    s = requests.Session()
+    s.headers.update(_BROWSER_HEADERS)
+    s.headers["User-Agent"] = user_agent
+    proxies = None
+    if proxy:
+        p = f"http://{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}"
+        proxies = {"http": p, "https": p}
+
+    try:
+        # Step 1: fetch → find the DataDome challenge URL
+        r = s.get(url, proxies=proxies, timeout=timeout_s, allow_redirects=True)
+        low = (r.url + " " + r.text).lower()
+        m = re.search(r"https://geo\.captcha-delivery\.com[^\"'\s)]+", low, re.I)
+        if not m:
+            # If no challenge, we might already have real content
+            if not is_cloudflare_block(r.text, r.status_code) and len(r.text) > 3000:
+                return {"success": True, "rawHtml": r.text, "status": r.status_code,
+                        "error": None, "blocked": False}
+            return {"success": False, "rawHtml": r.text, "status": r.status_code,
+                    "error": "no DataDome challenge URL found", "blocked": True}
+        captcha_url = m.group(0)
+
+        # Step 2: solve via 2Captcha with matching proxy + UA
+        proxy_str = f"{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}" if proxy else ""
+        cookie_set = solve_datadome(captcha_url=captcha_url, page_url=url,
+                                    user_agent=user_agent, proxy=proxy_str,
+                                    proxytype="http")
+        if not cookie_set or cookie_set.startswith("ERROR"):
+            return {"success": False, "rawHtml": "", "status": 0,
+                    "error": f"2captcha solve failed: {cookie_set}", "blocked": True}
+
+        # Step 3: re-fetch carrying the datadome cookie
+        mm = re.search(r"datadome=([^;]+)", cookie_set)
+        if not mm:
+            return {"success": False, "rawHtml": "", "status": 0,
+                    "error": "no datadome cookie in solve response", "blocked": True}
+        s.cookies.set("datadome", mm.group(1), domain=urllib.parse.urlparse(url).netloc)
+        r2 = s.get(url, proxies=proxies, timeout=timeout_s)
+        blocked = is_cloudflare_block(r2.text, r2.status_code)
+        return {"success": not blocked, "rawHtml": r2.text, "status": r2.status_code,
+                "error": None if not blocked else "still blocked after datadome solve",
+                "blocked": blocked}
+    except Exception as e:
+        return {"success": False, "rawHtml": "", "status": 0,
+                "error": f"datadome engine error: {type(e).__name__}: {str(e)[:120]}",
+                "blocked": False}
+
+
+# ---------------------------------------------------------------------------
 # BLOCK DETECTION — shared by all engines
 # ---------------------------------------------------------------------------
 
@@ -838,7 +922,7 @@ def classify_challenge(html: str, status: int) -> str:
 # Best engine to try first for each challenge type (early routing).
 # Fast/cheap first, escalate to residential/stealth only as needed.
 _CHALLENGE_ROUTING = {
-    "datadome":   ["camoufox", "webshare-stealth", "stealth"],  # strongest first
+    "datadome":   ["datadome", "camoufox", "webshare-stealth", "stealth"],  # 2Captcha solve first
     "hcaptcha":   ["camoufox", "webshare-stealth", "stealth"],
     "turnstile":  ["camoufox", "webshare-stealth", "stealth"],
     "cloudflare": ["stealth", "webshare", "webshare-stealth", "camoufox"],
@@ -1156,6 +1240,12 @@ def scan_url(
                 html = crash_data.get("rawHtml", "")
                 status = crash_data.get("status", 0)
 
+            elif engine == "datadome":            # ENGINE 9 — 2Captcha DataDome solve
+                log_lines.append(f"    Calling 2Captcha DataDome solve (PAID ~$0.003)...")
+                crash_data = scrape_via_datadome(url, timeout_s=timeout_s)
+                html = crash_data.get("rawHtml", "")
+                status = crash_data.get("status", 0)
+
             # Analyse
             blocked = is_cloudflare_block(html, status)
             diag = diagnosis(html, status, engine)
@@ -1307,7 +1397,7 @@ if __name__ == "__main__":
                     "(direct / WARP / Lightpanda / Playwright stealth / Webshare HTTP / Webshare stealth)"
     )
     parser.add_argument("--url", help="Single URL to scan")
-    parser.add_argument("--engine", choices=["direct", "warp", "lightpanda", "stealth", "residential", "webshare", "webshare-stealth", "camoufox", "cascade"],
+    parser.add_argument("--engine", choices=["direct", "warp", "lightpanda", "stealth", "residential", "webshare", "webshare-stealth", "camoufox", "datadome", "cascade"],
                         default="cascade", help="Engine to use (default: cascade = all in order)")
     parser.add_argument("--input", help="File with URLs to scan (name | url per line, or JSON)")
     parser.add_argument("--output", help="Output directory override")
