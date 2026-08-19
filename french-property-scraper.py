@@ -508,8 +508,19 @@ def scrape_via_residential(url, timeout_s=40, max_proxies=4):
     proxies = random.sample(WEBSHARE_PROXY_LIST, min(max_proxies, len(WEBSHARE_PROXY_LIST)))
     last_err = ""
 
+    from urllib.parse import urlparse as _uparse
+    _dom = _uparse(url).netloc
+    # Load cookie store helpers lazily (module may not exist in fresh clones)
+    _cookies_mod = None
+    try:
+        from cookie_store import get_cookies, save_cookies
+        _cookies_mod = (get_cookies, save_cookies)
+    except ImportError:
+        pass
+
     for proxy in proxies:
         ip, port = proxy.split(":")
+        captured_cookies = []   # challenge cookies captured before context closes
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(
@@ -527,20 +538,42 @@ def scrape_via_residential(url, timeout_s=40, max_proxies=4):
                                                   viewport={"width": 1366, "height": 900})
                     page = context.new_page()
                     Stealth().apply_stealth_sync(page)
+
+                    # Reuse a saved challenge cookie for this (IP, domain) to
+                    # skip re-solving the CAPTCHA on the next run.
+                    if _cookies_mod:
+                        saved = _cookies_mod[0](ip, _dom)
+                        if saved:
+                            try:
+                                context.add_cookies(saved)
+                                page.wait_for_timeout(500)
+                            except Exception:
+                                pass
+
                     # Behavioural warm-up: hit the site root first, then target,
                     # all on the SAME proxy IP (sticky — a single visitor from
                     # one IP, which is how real users arrive).
-                    _human_warmup(page, urllib.parse.urlparse(url).netloc)
+                    _human_warmup(page, _dom)
                     page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
                     _human_scroll(page, steps=4)
                     page.wait_for_timeout(6000)
                     html = page.content()
                     status = 200
+                    # Capture any anti-bot cookies (cf_clearance/datadome/etc.)
+                    # BEFORE the context closes so we can persist them.
+                    try:
+                        captured_cookies = context.cookies()
+                    except Exception:
+                        captured_cookies = []
                 finally:
                     browser.close()
 
             blocked = is_cloudflare_block(html, status)
             if not blocked:
+                # Persist challenge cookies so the next run for this IP+domain
+                # can skip the CAPTCHA entirely.
+                if _cookies_mod and captured_cookies:
+                    _cookies_mod[1](ip, _dom, captured_cookies)
                 return {"success": True, "rawHtml": html, "status": status,
                         "error": None, "blocked": False, "proxy": proxy}
             last_err = f"block page via {proxy}"
@@ -992,6 +1025,7 @@ def scan_url(
     log_lines: list[str] | None = None,
     stealth_use_warp: bool = True,
     camoufox_proxy: bool = False,
+    explicit: bool = False,
 ) -> dict:
     """Scan a single property URL using the requested engines.
 
@@ -1024,23 +1058,26 @@ def scan_url(
     except Exception:
         pass
 
-    challenge = classify_challenge(probe_html, probe_status)
-    if challenge == "ok" and len(probe_html) > 3000:
-        log_lines.append(f"  → direct probe OK ({len(probe_html)} chars) — no challenge")
-        crash_data = {"success": True, "markdown": "", "rawHtml": probe_html,
-                      "status": probe_status, "error": None}
-        extracted = extract_property_data(probe_html, url)
-        return {
-            "url": url, "engine": "direct", "status": probe_status,
-            "blocked": False, "html_length": len(probe_html),
-            "data": extracted, "raw_html": probe_html,
-            "diagnostics": log_lines, "scan_time_s": 0.0,
-        }
-    elif challenge != "unknown":
-        ordered = route_engines(challenge, engines)
-        log_lines.append(f"  → challenge classifier: {challenge} — routing to: "
-                         f"{', '.join(ordered)}")
-        engines = ordered
+    # Only apply challenge-based early routing when NOT an explicit single-
+    # engine request (user asked for a specific engine → honour it exactly).
+    if not explicit:
+        challenge = classify_challenge(probe_html, probe_status)
+        if challenge == "ok" and len(probe_html) > 3000:
+            log_lines.append(f"  → direct probe OK ({len(probe_html)} chars) — no challenge")
+            crash_data = {"success": True, "markdown": "", "rawHtml": probe_html,
+                          "status": probe_status, "error": None}
+            extracted = extract_property_data(probe_html, url)
+            return {
+                "url": url, "engine": "direct", "status": probe_status,
+                "blocked": False, "html_length": len(probe_html),
+                "data": extracted, "raw_html": probe_html,
+                "diagnostics": log_lines, "scan_time_s": 0.0,
+            }
+        elif challenge != "unknown":
+            ordered = route_engines(challenge, engines)
+            log_lines.append(f"  → challenge classifier: {challenge} — routing to: "
+                             f"{', '.join(ordered)}")
+            engines = ordered
 
     crash_data = {}
     crash_reason = ""
@@ -1317,7 +1354,8 @@ if __name__ == "__main__":
         engines = engines if args.engine != "cascade" else ["direct", "warp", "lightpanda", "stealth", "webshare", "webshare-stealth"]
         result = scan_url(args.url, engines=engines,
                           stealth_use_warp=not args.stealth_no_warp,
-                          camoufox_proxy=args.camoufox_proxy)
+                          camoufox_proxy=args.camoufox_proxy,
+                          explicit=(args.engine != "cascade"))
         status = "✅ OK" if not result["blocked"] else "❌ BLOCKED"
         print(f"\n{status}  engine={result['engine']}  |  {result['url']}")
         print(f"  price={result['data'].get('price_eur')}  "

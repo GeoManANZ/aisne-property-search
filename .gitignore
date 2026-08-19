@@ -13,5 +13,8 @@ scans/
 # Images/screenshots
 *.png
 
+# Secrets — NEVER commit API keys
+.env
+
 # Local DB (committed as schema, not data)
 # listings.db
