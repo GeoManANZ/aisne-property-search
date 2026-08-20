@@ -57,6 +57,68 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from dataclasses import dataclass, field, asdict
+
+
+# ---------------------------------------------------------------------------
+# Standardised engine return type (review item 5)
+# ---------------------------------------------------------------------------
+@dataclass
+class ScrapeResult:
+    """Single canonical shape returned by every scraping engine.
+
+    All engines (direct, warp, lightpanda, stealth, webshare*, camoufox,
+    datadome) return this.  `scan_url` and downstream consumers read ONLY
+    this shape.
+    """
+    success: bool
+    html: str = ""
+    status: int = 0
+    engine: str = ""
+    blocked: bool = False
+    error: Optional[str] = None
+    cookies: Optional[list] = None
+    proxy_ip: Optional[str] = None
+    timing_s: float = 0.0
+    reused_cookie: bool = False
+    rawHtml: str = ""          # alias so dict-style readers keep working
+
+    def __post_init__(self):
+        if self.rawHtml == "" and self.html:
+            self.rawHtml = self.html
+        elif self.html == "" and self.rawHtml:
+            self.html = self.rawHtml
+
+    def get(self, key: str, default=None):
+        """dict-style access so existing dispatch code (crash_data.get(...))
+        works unchanged whether an engine returns a dict or a ScrapeResult."""
+        if key == "rawHtml":
+            return self.rawHtml
+        if key == "html":
+            return self.html
+        return getattr(self, key, default)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        d["rawHtml"] = d["rawHtml"] or d["html"]
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict, engine: str = "") -> "ScrapeResult":
+        """Wrap an engine's raw dict return into a ScrapeResult."""
+        return cls(
+            success=bool(d.get("success", False)),
+            html=d.get("rawHtml") or d.get("html", ""),
+            status=int(d.get("status", 0)),
+            engine=engine or d.get("engine", ""),
+            blocked=bool(d.get("blocked", False)),
+            error=d.get("error"),
+            cookies=d.get("cookies"),
+            proxy_ip=d.get("proxy_ip"),
+            timing_s=float(d.get("timing_s", 0.0)),
+            reused_cookie=bool(d.get("reused_cookie", False)),
+        )
+
 
 # ---------------------------------------------------------------------------
 # CONFIG — single source of truth in config.py
@@ -809,7 +871,7 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
                    with the direct egress — DataDome may reject, but worth it
                    when no proxy is available)
 
-    Returns dict with success/rawHtml/status/error/blocked keys.
+    Returns ScrapeResult with success/rawHtml/status/error/blocked/reused_cookie.
     """
     import re
     from twocaptcha_client import solve_datadome
@@ -823,9 +885,9 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
         import random
         proxy = random.choice(WEBSHARE_PROXY_LIST) if WEBSHARE_PROXY_LIST else None
     if proxy is None:
-        return {"success": False, "rawHtml": "", "status": 0,
-                "error": "no Webshare proxy available for DataDome solve",
-                "blocked": True}
+        return ScrapeResult(success=False, status=0, engine="datadome",
+                            error="no Webshare proxy available for DataDome solve",
+                            blocked=True)
 
     try:
         domain = urllib.parse.urlparse(url).netloc
@@ -847,8 +909,9 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
                                                  "Cookie": f"datadome={saved_dd}"})
             r0 = s0.get(url)
             if not is_cloudflare_block(r0.text, r0.status_code) and len(r0.text) > 3000:
-                return {"success": True, "rawHtml": r0.text, "status": r0.status_code,
-                        "error": None, "blocked": False, "reused_cookie": True}
+                return ScrapeResult(success=True, html=r0.text, status=r0.status_code,
+                                    engine="datadome", blocked=False,
+                                    proxy_ip=proxy.split(":")[0], reused_cookie=True)
 
         # Step 1: fetch through the chain → get the dd object
         s = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
@@ -859,10 +922,13 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
         if not dd:
             # no challenge → maybe real content already
             if not is_cloudflare_block(r.text, r.status_code) and len(r.text) > 3000:
-                return {"success": True, "rawHtml": r.text, "status": r.status_code,
-                        "error": None, "blocked": False}
-            return {"success": False, "rawHtml": r.text, "status": r.status_code,
-                    "error": "no DataDome dd object found", "blocked": True}
+                return ScrapeResult(success=True, html=r.text, status=r.status_code,
+                                    engine="datadome", blocked=False,
+                                    proxy_ip=proxy.split(":")[0])
+            return ScrapeResult(success=False, html=r.text, status=r.status_code,
+                                engine="datadome", blocked=True,
+                                error="no DataDome dd object found",
+                                proxy_ip=proxy.split(":")[0])
         captcha_url = _build_datadome_challenge_url(dd, url)
         import sys
         print(f"  [datadome] dd={ {k: dd.get(k) for k in ('cid','hsh','t','s','e','host','rt')} }",
@@ -875,14 +941,16 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
                                     user_agent=user_agent, proxy=proxy_str,
                                     proxytype="http")
         if not cookie_set or cookie_set.startswith("ERROR"):
-            return {"success": False, "rawHtml": "", "status": 0,
-                    "error": f"2captcha solve failed: {cookie_set}", "blocked": True}
+            return ScrapeResult(success=False, status=0, engine="datadome",
+                                blocked=True, proxy_ip=proxy.split(":")[0],
+                                error=f"2captcha solve failed: {cookie_set}")
 
         # Step 3: re-fetch carrying the datadome cookie
         mm = re.search(r"datadome=([^;]+)", cookie_set)
         if not mm:
-            return {"success": False, "rawHtml": "", "status": 0,
-                    "error": "no datadome cookie in solve response", "blocked": True}
+            return ScrapeResult(success=False, status=0, engine="datadome",
+                                blocked=True, proxy_ip=proxy.split(":")[0],
+                                error="no datadome cookie in solve response")
         s2 = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
                                     headers={"User-Agent": user_agent,
                                              "Accept-Language": "fr-FR,fr;q=0.9",
@@ -899,14 +967,15 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
             save_cookies(proxy.split(":")[0], domain,
                          [{"name": "datadome", "value": mm.group(1),
                            "domain": "." + domain, "path": "/"}])
-        return {"success": success, "rawHtml": r2.text, "status": r2.status_code,
-                "error": None if success
-                        else f"still blocked after datadome solve (status {r2.status_code})",
-                "blocked": blocked, "reused_cookie": False}
+        return ScrapeResult(success=success, html=r2.text, status=r2.status_code,
+                            engine="datadome", blocked=blocked,
+                            proxy_ip=proxy.split(":")[0], reused_cookie=False,
+                            error=None if success
+                            else f"still blocked after datadome solve (status {r2.status_code})")
     except Exception as e:
-        return {"success": False, "rawHtml": "", "status": 0,
-                "error": f"datadome engine error: {type(e).__name__}: {str(e)[:120]}",
-                "blocked": False}
+        return ScrapeResult(success=False, status=0, engine="datadome",
+                            blocked=False, proxy_ip=(proxy or "").split(":")[0],
+                            error=f"datadome engine error: {type(e).__name__}: {str(e)[:120]}")
 
 
 # ---------------------------------------------------------------------------
