@@ -44,6 +44,28 @@ def fetch(url: str, timeout: int = 30) -> str:
     return r.text
 
 
+def fetch_seloger(url: str, timeout: int = 45) -> str:
+    """Fetch a SeLoger search page through the DataDome-bypass engine.
+
+    SeLoger is behind DataDome, so a plain requests.get gets a 403 challenge.
+    We solve via 2Captcha (matching proxy + UA) and return the real SPA HTML.
+    Falls back to the Camoufox render if the solve fails.
+    """
+    from french_property_scraper import scrape_via_datadome
+    r = scrape_via_datadome(url, timeout_s=timeout)
+    if r.success and len(r.html) > 3000:
+        return r.html
+    # Fallback: try Camoufox render (free)
+    try:
+        from french_property_scraper import scrape_via_camoufox
+        cr = scrape_via_camoufox(url, timeout_s=timeout, use_proxy=True, warmup=True)
+        if cr.get("success") and len(cr.get("rawHtml", "")) > 3000:
+            return cr["rawHtml"]
+    except Exception:
+        pass
+    raise RuntimeError(f"SeLoger fetch failed: {r.error or 'blocked'}")
+
+
 # ---------------------------------------------------------------------------
 # FNAIM PARSER
 # ---------------------------------------------------------------------------
@@ -355,6 +377,150 @@ def is_cloudflare_block(html: str, status: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# SELOGER PARSER (multi-listing from search result page)
+# ---------------------------------------------------------------------------
+# SeLoger is a JS SPA: the search page is rendered by Camoufox (or fetched
+# with a solved DataDome cookie) into real HTML.  Each listing is a card:
+#
+#   <div data-testid="classified-card-mfe-<CARD_ID>">
+#     <a data-testid="card-mfe-covering-link-testid" href=".../detail.htm">
+#     <div data-testid="cardmfe-price-testid">465 000 €</div>
+#     <div data-testid="card-mfe-energy-performance-class">E</div>
+#     <div data-testid="cardmfe-keyfacts-testid">461 m²</div>
+#     <div data-testid="cardmfe-description-box-address">Château-Thierry (02400)</div>
+#     <div data-testid="cardmfe-description-text-testid">Immeuble à vendre...</div>
+#     <div data-testid="cardmfe-agency-publisher-*-test-id">CANDAT IMMOBILIER</div>
+#   </div>
+#
+# We parse each card into the SAME dict shape as the other parsers so the
+# consolidated listings / DB pipeline is source-agnostic.
+
+# Price text: "465 000 €" or "1 009 €/m²" (narrow no-break space \u202f / \u00a0)
+_SELOGER_PRICE_RE = re.compile(
+    r"([\d][\d\s\u00a0\u202f.,]*)\s*€", re.IGNORECASE)
+
+
+def _clean_seloger_price(raw: str) -> int | None:
+    """'465 000 €' / '465\u202f000\u202f€' → 465000."""
+    if not raw:
+        return None
+    s = raw.replace("\u202f", "").replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    try:
+        return int(float(s))
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_seloger(html: str, source_url: str = "") -> list[dict]:
+    """Parse a SeLoger search result page → list of property dicts.
+
+    Handles the SPA-rendered card markup (data-testid selectors).  Skips
+    promoted/partner cards that lack a real detail URL.  Returns [] if the
+    page is a challenge stub (DataDome / no cards).
+    """
+    if not html or len(html) < 3000:
+        return []
+    low = html.lower()
+    if any(b in low for b in ("geochallenge", "captcha-delivery", "prouvez que",
+                              "just a moment", "cf-chl-integrity")):
+        return []  # challenge stub — no listings
+
+    try:
+        from lxml import html as _lhtml
+        tree = _lhtml.fromstring(html)
+    except Exception:
+        return []
+
+    cards = tree.cssselect('[data-testid^="classified-card-mfe-"]')
+    results = []
+    seen = set()
+
+    for card in cards:
+        # --- URL (skip partner/promoted cards with wl-cdp links) ---
+        link = card.cssselect('[data-testid="card-mfe-covering-link-testid"]')
+        href = link[0].get("href") if link else None
+        if not href or "detail.htm" not in href:
+            continue
+        if not href.startswith("http"):
+            href = "https://www.seloger.com" + href
+        if href in seen:
+            continue
+        seen.add(href)
+
+        # --- Price ---
+        price = None
+        pe = card.cssselect('[data-testid="cardmfe-price-testid"]')
+        if pe:
+            txt = " ".join(pe[0].itertext()).strip()
+            pm = _SELOGER_PRICE_RE.search(txt)
+            if pm:
+                price = _clean_seloger_price(pm.group(1))
+
+        # --- Surface (keyfacts: "461 m²") ---
+        surface = None
+        kf = card.cssselect('[data-testid="cardmfe-keyfacts-testid"]')
+        if kf:
+            ktxt = " ".join(kf[0].itertext()).strip()
+            sm = re.search(r"(\d+)\s*m²", ktxt, re.I)
+            if sm:
+                try:
+                    surface = int(sm.group(1))
+                except ValueError:
+                    pass
+
+        # --- DPE energy ---
+        dpe = None
+        de = card.cssselect('[data-testid="card-mfe-energy-performance-class"]')
+        if de:
+            dtxt = " ".join(de[0].itertext()).strip()
+            dm = re.search(r"\b([A-G])\b", dtxt)
+            if dm:
+                dpe = dm.group(1).upper()
+
+        # --- Location / address ---
+        location = None
+        le = card.cssselect('[data-testid="cardmfe-description-box-address"]')
+        if le:
+            location = " ".join(le[0].itertext()).strip()[:200]
+
+        # --- Title / description ---
+        title = ""
+        te = card.cssselect('[data-testid="cardmfe-description-text-testid"]')
+        if te:
+            title = " ".join(te[0].itertext()).strip()[:250]
+
+        # --- Agency ---
+        agency = None
+        ae = card.cssselect('[data-testid^="cardmfe-agency-publisher-"]')
+        if ae:
+            agency = " ".join(ae[0].itertext()).strip()[:120] or None
+
+        # --- Card id from container testid ---
+        card_id = None
+        tid = card.get("data-testid") or ""
+        if tid.startswith("classified-card-mfe-"):
+            card_id = tid.replace("classified-card-mfe-", "")
+
+        results.append({
+            "source": "seloger",
+            "url": href,
+            "title": title,
+            "price_eur": price,
+            "surface_m2": surface,
+            "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
+            "dpe_energy": dpe,
+            "location": location,
+            "agency": agency,
+            "ref": card_id,
+            "raw_title": title,
+            "parsed_at": datetime.now(timezone.utc).isoformat(),
+            "source_page": source_url,
+        })
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # LADDER — crawl FNAIM + IAD + ParuVendu in sequence
 # ---------------------------------------------------------------------------
 
@@ -362,12 +528,14 @@ PARSERS = {
     "fnaim": parse_fnaim,
     "iad": parse_iad,
     "paruvendu": parse_paruvendu,
+    "seloger": parse_seloger,
 }
 
 SOURCE_URLS = {
     "fnaim": "https://www.fnaim.fr/liste-annonces-immobilieres/17-acheter-immeuble-aisne-02.htm",
     "iad": "https://www.iadfrance.fr/annonces/aisne-02/vente/immeuble",
     "paruvendu": "https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/",
+    "seloger": "https://www.seloger.com/recherche/achat/immeuble/hauts-de-france/aisne-02/ad06fr2",
 }
 
 OUTPUT_DIR = Path("/workspace/hermes1/projects/aisne-property-search/scans")
@@ -387,7 +555,7 @@ def ladder(
     Returns dict with per-source results and consolidated listings.
     """
     if sources is None:
-        sources = ["fnaim", "iad", "paruvendu"]
+        sources = ["fnaim", "iad", "paruvendu", "seloger"]
     if scan_details_for is None:
         scan_details_for = []
 
@@ -414,7 +582,10 @@ def ladder(
         t0 = time.time()
 
         try:
-            html = fetch(url, timeout=30)
+            if source == "seloger":
+                html = fetch_seloger(url, timeout=45)
+            else:
+                html = fetch(url, timeout=30)
             parser = PARSERS.get(source)
             if not parser:
                 log_lines.append(f"  ✗ No parser for {source}")
@@ -561,7 +732,7 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest="command")
 
     # Per-source commands
-    for src in ["fnaim", "iad", "paruvendu"]:
+    for src in ["fnaim", "iad", "paruvendu", "seloger"]:
         sp = subparsers.add_parser(src, help=f"Parse {src} search page")
         sp.add_argument("--url", help="Override default URL")
         sp.add_argument("--max", type=int, default=200, help="Max listings to extract")
@@ -583,14 +754,17 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
-    if args.command in ("fnaim", "iad", "paruvendu"):
+    if args.command in ("fnaim", "iad", "paruvendu", "seloger"):
         src = args.command
         url = args.url or SOURCE_URLS.get(src)
         if not url:
             print(f"No URL for {src}"); sys.exit(1)
 
         print(f"Fetching {src}: {url} ...")
-        html = fetch(url)
+        if src == "seloger":
+            html = fetch_seloger(url)
+        else:
+            html = fetch(url)
         parser = PARSERS[src]
         listings = parser(html, url)
 
