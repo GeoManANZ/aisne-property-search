@@ -19,3 +19,5 @@ scans/
 # Local DB (committed as schema, not data)
 # listings.db
 *.html
+engine_metrics.jsonl
+listings.db
