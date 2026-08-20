@@ -1158,28 +1158,160 @@ _AGENCY_RE = re.compile(r"(?:agence|conseiller|agent)\s*(?:de|immobilier|:\s*)([
 _REF_RE = re.compile(r"(?:réf|référence|ref)[.:]?\s*([A-Z0-9\-]{6,40})", re.IGNORECASE)
 
 
+def _extract_structured_data(html: str) -> dict:
+    """Structured-data extraction (review item 7, layer 1 of 3).
+
+    Tries, in order:
+      1. <script type="application/ld+json"> — schema.org Product/Offer/RealEstateListing
+      2. microdata <meta itemprop=...> / <span itemprop=...>
+
+    Returns a dict with price_eur / surface_m2 / dpe_energy if found,
+    else an empty dict.  This is the highest-priority extraction source
+    because it's schema-typed and survives portal markup changes far
+    longer than regex (which has a ~2-6 week half-life on these sites).
+    """
+    import json as _json
+    result = {}
+
+    # --- Layer 1a: application/ld+json ---
+    for m in re.finditer(r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+                         html, re.S | re.I):
+        raw = m.group(1).strip()
+        try:
+            data = _json.loads(raw)
+        except Exception:
+            # sometimes wrapped in /*<![CDATA[*/ ... */
+            try:
+                data = _json.loads(raw.replace("/*<![CDATA[*/", "").replace("*/]]>", "").strip())
+            except Exception:
+                continue
+        # walk nested objects/arrays for price/surface fields
+        def _walk(node):
+            nonlocal result
+            if isinstance(node, dict):
+                # price in EUR
+                if "offers" in node and isinstance(node["offers"], dict):
+                    off = node["offers"]
+                    p = off.get("price") or off.get("priceSpecification", {}).get("price")
+                    if p is not None and not result.get("price_eur"):
+                        try:
+                            result["price_eur"] = int(float(str(p).replace(",", ".")))
+                        except (ValueError, TypeError):
+                            pass
+                # surface
+                floor = node.get("floorSize") or node.get("numberOfRooms")
+                if isinstance(floor, dict):
+                    v = floor.get("value")
+                    if v and not result.get("surface_m2"):
+                        try:
+                            result["surface_m2"] = int(float(str(v)))
+                        except (ValueError, TypeError):
+                            pass
+                # DPE energy
+                for k in ("energyRating", "energyEfficiency", "efficientEnergy",
+                          "energyConsumption", "hasEnergyEfficiency"):
+                    v = node.get(k)
+                    if isinstance(v, dict):
+                        v = v.get("value") or v.get("name")
+                    if isinstance(v, str) and v and not result.get("dpe_energy"):
+                        m2 = re.search(r"\b([A-G])\b", v)
+                        if m2:
+                            result["dpe_energy"] = m2.group(1).upper()
+                for v in node.values():
+                    _walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    _walk(v)
+        _walk(data)
+
+    # --- Layer 1b: microdata meta itemprop ---
+    if not result.get("price_eur"):
+        pm = re.search(
+            r'<meta[^>]*itemprop=["\']price["\'][^>]*content=["\']([\d\s.,]+)["\']',
+            html, re.I)
+        if pm:
+            try:
+                result["price_eur"] = int(float(pm.group(1).replace(" ", "").replace(",", ".")))
+            except (ValueError, TypeError):
+                pass
+    if not result.get("surface_m2"):
+        sm = re.search(
+            r'<meta[^>]*itemprop=["\']floorSize|"surface"["\'][^>]*content=["\'](\d+)["\']',
+            html, re.I)
+        if sm:
+            try:
+                result["surface_m2"] = int(sm.group(1))
+            except (ValueError, TypeError):
+                pass
+
+    return result
+
+
 def extract_property_data(html: str, url: str) -> dict:
     """Best-effort extraction of key fields from French property listing HTML.
 
     Returns a dict with price, surface, DPE, agency, ref, description.
+    Extraction is layered (review item 7):
+      1. structured data (LD+JSON / microdata) — most reliable, survives long
+      2. site CSS selectors (Orpi, SeLoger, FNAIM, iad, ParuVendu)
+      3. regex fallback (broadest but most fragile)
     Not all fields will be populated — structure varies wildly per portal.
     """
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"\s+", " ", text)
 
+    # --- Layer 1: structured data (LD+JSON / microdata) ---
+    struct = _extract_structured_data(html)
+
+    # --- Layer 2: site-specific CSS selectors via lxml ---
+    from lxml import html as _lhtml
+    price = struct.get("price_eur")
+    surface = struct.get("surface_m2")
+    dpe = struct.get("dpe_energy")
+    try:
+        tree = _lhtml.fromstring(html)
+        if price is None:
+            for sel in ('[itemprop="price"]', '[data-testid="price"]',
+                        '[class*="price"]', '.prix', '[class*="amount"]'):
+                els = tree.cssselect(sel)
+                if els:
+                    t = " ".join(els[0].itertext()).strip()
+                    mm = re.search(r"([\d][\d\s.,]*)\s*(?:€|&euro;|euro)", t, re.I)
+                    if mm:
+                        try:
+                            price = int(float(mm.group(1).replace(" ", "").replace(",", ".")))
+                        except (ValueError, TypeError):
+                            pass
+                    if price:
+                        break
+        if surface is None:
+            for sel in ('[itemprop="floorSize"]', '[data-testid="surface"]',
+                        '[class*="surface"]', '[class*="area"]'):
+                els = tree.cssselect(sel)
+                if els:
+                    t = " ".join(els[0].itertext()).strip()
+                    mm = re.search(r"(\d+)\s*m²?", t, re.I)
+                    if mm:
+                        try:
+                            surface = int(mm.group(1))
+                        except (ValueError, TypeError):
+                            pass
+                    if surface:
+                        break
+    except Exception:
+        pass  # malformed HTML — fall through to regex
+
+    # --- Layer 3: regex fallback (existing strategies) ---
     # Price — try multiple strategies in priority order
-    price = None
-
-    # Strategy 1: FNAIM microdata <span itemprop="price">XX XXX</span>
-    fnaim_match = _FNAIM_PRICE_RE.search(html)
-    if fnaim_match:
-        p = fnaim_match.group(1).replace(" ", "").replace(".", "")
-        try:
-            price = int(p)
-        except ValueError:
-            pass
-
-    # Strategy 2: Generic price regex on stripped text
+    if price is None:
+        # FNAIM microdata <span itemprop="price">XX XXX</span>
+        fnaim_match = _FNAIM_PRICE_RE.search(html)
+        if fnaim_match:
+            p = fnaim_match.group(1).replace(" ", "").replace(".", "")
+            try:
+                price = int(p)
+            except ValueError:
+                pass
     if price is None:
         price_match = _PRICE_RE.search(text)
         if price_match:
@@ -1188,8 +1320,6 @@ def extract_property_data(html: str, url: str) -> dict:
                 price = int(p)
             except ValueError:
                 pass
-
-    # Strategy 3: FNAIM H1 title "Achat Immeuble 103m² LAON 02000 79 900"
     if price is None:
         title_match = _FNAIM_TITLE_PRICE_RE.search(text)
         if title_match:
@@ -1199,24 +1329,27 @@ def extract_property_data(html: str, url: str) -> dict:
             except ValueError:
                 pass
 
-    # Surface
-    surface = None
-    surf_match = _SURFACE_RE.search(text)
-    if surf_match:
-        groups = surf_match.groups()
-        if groups[0]:
-            try:
-                surface = int(groups[0])
-            except ValueError:
-                pass
-        elif groups[1]:
-            try:
-                surface = int(groups[1])
-            except ValueError:
-                pass
+    # Surface (regex fallback)
+    if surface is None:
+        surf_match = _SURFACE_RE.search(text)
+        if surf_match:
+            groups = surf_match.groups()
+            if groups[0]:
+                try:
+                    surface = int(groups[0])
+                except ValueError:
+                    pass
+            elif groups[1]:
+                try:
+                    surface = int(groups[1])
+                except ValueError:
+                    pass
 
-    # DPE
-    dpe = _DPE_RE.search(text)
+    # DPE (regex fallback)
+    if dpe is None:
+        dpe_match = _DPE_RE.search(text)
+        if dpe_match:
+            dpe = dpe_match.group(1).upper()
 
     # Agency / agent
     agency_raw = _AGENCY_RE.search(text)
@@ -1224,13 +1357,23 @@ def extract_property_data(html: str, url: str) -> dict:
     # Reference number
     ref_raw = _REF_RE.search(text)
 
+    # Price-per-m² with outlier flag (review item 7)
+    price_per_m2 = (price / surface) if (price and surface and surface > 0) else None
+    outlier = None
+    if price_per_m2 is not None:
+        if price_per_m2 > 8000:
+            outlier = "high"
+        elif price_per_m2 < 300:
+            outlier = "low"
+
     return {
         "url": url,
         "scanned_at": datetime.now(timezone.utc).isoformat(),
         "price_eur": price,
         "surface_m2": surface,
-        "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
-        "dpe_energy": dpe.group(1).upper() if dpe else None,
+        "price_per_m2": price_per_m2,
+        "price_outlier": outlier,
+        "dpe_energy": dpe,
         "agency": agency_raw.group(1).strip() if agency_raw else None,
         "reference": ref_raw.group(1) if ref_raw else None,
         "description_snippet": text[:800].strip(),
