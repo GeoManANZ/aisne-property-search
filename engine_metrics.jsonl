@@ -4,3 +4,6 @@
 {"ts": 1787214636.5251734, "domain": "www.seloger.com", "challenge": "datadome", "engine": "datadome", "success": true, "timing_s": 10.0, "proxy_ip": null, "error": ""}
 {"ts": 1787214636.5255156, "domain": "www.seloger.com", "challenge": "datadome", "engine": "camoufox", "success": false, "timing_s": 30.0, "proxy_ip": null, "error": ""}
 {"ts": 1787214636.525936, "domain": "www.seloger.com", "challenge": "datadome", "engine": "camoufox", "success": false, "timing_s": 30.0, "proxy_ip": null, "error": ""}
+{"ts": 1787215692.1191428, "domain": "www.fnaim.fr", "challenge": "unknown", "engine": "direct", "success": true, "timing_s": 1.11, "proxy_ip": null, "error": ""}
+{"ts": 1787215703.4288237, "domain": "www.fnaim.fr", "challenge": "unknown", "engine": "direct", "success": true, "timing_s": 1.04, "proxy_ip": null, "error": ""}
+{"ts": 1787215715.4824238, "domain": "www.fnaim.fr", "challenge": "unknown", "engine": "direct", "success": true, "timing_s": 1.2, "proxy_ip": null, "error": ""}

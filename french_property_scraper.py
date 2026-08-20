@@ -904,7 +904,12 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
     from webshare_chain import ChainedWebshareSession
 
     if user_agent is None:
-        user_agent = _BROWSER_HEADERS["User-Agent"]
+        # One consistent fingerprint for solve + all requests (review item 16)
+        try:
+            from config import build_fingerprint
+            user_agent = build_fingerprint()["user_agent"]
+        except Exception:
+            user_agent = _BROWSER_HEADERS["User-Agent"]
 
     # Pick a proxy: explicit, or a healthy round-robin one from the config.
     if proxy is None:
@@ -1675,47 +1680,75 @@ def scan_batch(
     delay_s: float = 2.0,
     stealth_use_warp: bool = True,
     camoufox_proxy: bool = False,
+    jobs: int = 1,
 ) -> list[dict]:
     """Scan multiple URLs; urls is a list of {"name": str, "url": str} dicts.
 
     Returns the list of per-URL scan result dicts.  Raw HTML is written
     to disk per URL; structured data is consolidated into results.json.
+
+    `jobs > 1` runs independent URLs concurrently with a ThreadPoolExecutor
+    (review item 15).  A threading.Lock guards the shared log list.
     """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     if engines is None:
         engines = ["direct", "warp", "lightpanda", "stealth", "webshare", "webshare-stealth"]
+    output_dir = Path(output_dir) if output_dir is not None else None
     if output_dir is None:
         scan_id = hashlib.md5(str(datetime.now(timezone.utc)).encode()).hexdigest()[:8]
         output_dir = SCAN_DIR / scan_id
-        output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
     log_all = [f"=== French Property Scraper — batch run "
                f"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} ===", ""]
+    log_lock = threading.Lock()
 
-    for idx, entry in enumerate(urls, 1):
+    def _scan_one(idx: int, entry: dict) -> dict:
         name = entry.get("name", f"listing-{idx}")
         url = entry["url"]
-        log_all.append(f"--- [{idx}/{len(urls)}] {name} ---")
-
-        result = scan_url(url, engines=engines, log_lines=log_all,
+        local_log = []
+        with log_lock:
+            log_all.append(f"--- [{idx}/{len(urls)}] {name} ---")
+        result = scan_url(url, engines=engines, log_lines=local_log,
                           stealth_use_warp=stealth_use_warp,
                           camoufox_proxy=camoufox_proxy)
         result["name"] = name
+        with log_lock:
+            log_all.extend(local_log)
+            log_all.append(f"  Result: {'OK' if not result['blocked'] else 'BLOCKED'} via {result['engine']}")
+            log_all.append("")
+        return result
 
-        # Save raw HTML if we got it
+    if jobs > 1 and len(urls) > 1:
+        with ThreadPoolExecutor(max_workers=min(jobs, len(urls))) as ex:
+            futures = {ex.submit(_scan_one, idx, entry): idx
+                       for idx, entry in enumerate(urls, 1)}
+            for f in as_completed(futures):
+                try:
+                    results.append(f.result())
+                except Exception as e:
+                    results.append({"name": "error", "url": "", "engine": "",
+                                    "blocked": True, "data": {},
+                                    "error": str(e), "diagnostics": [], "raw_html": ""})
+        # keep input order for stable reports
+        by_name = {r.get("name"): r for r in results}
+        results = [by_name.get(e.get("name", f"listing-{i}"), e) or e
+                   for i, e in enumerate(urls, 1)]
+    else:
+        for idx, entry in enumerate(urls, 1):
+            results.append(_scan_one(idx, entry))
+            if idx < len(urls):
+                time.sleep(delay_s)
+
+    # Save raw HTML for each result (unique filenames — concurrency-safe)
+    for result in results:
         if not result["blocked"] and result.get("raw_html"):
-            safe_name = re.sub(r"[^\w\-]", "_", name)
+            safe_name = re.sub(r"[^\w\-]", "_", result.get("name", "listing"))
             raw_path = output_dir / f"{safe_name}.html"
             raw_path.write_text(result["raw_html"][:5_000_000], encoding="utf-8")
-
-        # Save structured data
-        results.append(result)
-
-        log_all.append(f"  Result: {'OK' if not result['blocked'] else 'BLOCKED'} via {result['engine']}")
-        log_all.append("")
-
-        if idx < len(urls):
-            time.sleep(delay_s)
 
     # Save batch log
     log_path = output_dir / "log.txt"
@@ -1754,6 +1787,8 @@ if __name__ == "__main__":
                         help="stealth engine: don't route through WARP (use direct IP)")
     parser.add_argument("--camoufox-proxy", action="store_true",
                         help="camoufox engine: route through a Webshare residential IP (sticky)")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Concurrent scan workers for --input batches (default 1 = serial)")
     args = parser.parse_args()
 
     if not _PYTHON_SOCKS_AVAILABLE:
@@ -1780,7 +1815,8 @@ if __name__ == "__main__":
         out_dir = Path(args.output) if args.output else None
         results = scan_batch(urls, engines=engines, output_dir=out_dir,
                              stealth_use_warp=not args.stealth_no_warp,
-                             camoufox_proxy=args.camoufox_proxy)
+                             camoufox_proxy=args.camoufox_proxy,
+                             jobs=args.jobs)
         print(f"\nScanned {len(results)} URLs")
         for r in results:
             status = "✅ OK" if not r["blocked"] else "❌ BLOCKED"

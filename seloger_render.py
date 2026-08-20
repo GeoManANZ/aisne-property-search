@@ -18,13 +18,15 @@ from pathlib import Path
 sys.path.insert(0, Path(__file__).parent.as_posix())
 
 from twocaptcha_client import solve_datadome, get_balance
-from config import WEBSHARE_PROXY_USER, WEBSHARE_PROXY_PASS, WEBSHARE_PROXY_LIST
+from config import (
+    WEBSHARE_PROXY_USER, WEBSHARE_PROXY_PASS, WEBSHARE_PROXY_LIST,
+    build_fingerprint,
+)
 from french_property_scraper import _parse_datadome_dd, _build_datadome_challenge_url
 
 from webshare_chain import ChainedWebshareSession
 
-UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+UA = build_fingerprint()["user_agent"]
 
 
 def solve_datadome_for(url, proxy_ip):

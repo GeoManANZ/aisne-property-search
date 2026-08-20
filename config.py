@@ -138,6 +138,28 @@ UA_POOL = [
      "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"),
 ]
 
+
+# ---------------------------------------------------------------------------
+# Fingerprint consistency (review item 16)
+# ---------------------------------------------------------------------------
+# A single "fingerprint" = (UA, Accept-Language, viewport, timezone, locale).
+# It must be IDENTICAL across solve → browser → subsequent requests for the
+# same target, or DataDome/Cloudflare re-challenge (IP-bound cookies are
+# checked against the client fingerprint too).
+def build_fingerprint(ua: str | None = None) -> dict:
+    """Return a full fingerprint dict.  All engines should call this once per
+    target URL and thread the SAME fingerprint through every step."""
+    if ua is None:
+        import random
+        ua = random.choice(UA_POOL)
+    return {
+        "user_agent": ua,
+        "accept_language": "fr-FR,fr;q=0.9,en;q=0.8",
+        "viewport": {"width": 1440, "height": 900},
+        "timezone_id": "Europe/Paris",
+        "locale": "fr-FR",
+    }
+
 # ---------------------------------------------------------------------------
 # WAF / block detection
 # ---------------------------------------------------------------------------
