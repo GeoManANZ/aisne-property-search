@@ -8,6 +8,7 @@ ONE 2Captcha solve (~$0.003).
 """
 import sys, re, json, urllib.parse
 sys.path.insert(0, "/workspace/hermes1/projects/aisne-property-search")
+from config import WEBSHARE_PROXY_USER, WEBSHARE_PROXY_PASS
 
 URL = "https://www.seloger.com/annonces/achat/immeuble/aisne-02/"
 PROXY_IP = "31.59.20.176:6754"
@@ -70,7 +71,7 @@ captcha_url = (f"https://{host}/captcha/?initialCid={urllib.parse.quote(cid)}"
 print("captcha_url:", captcha_url[:120], "...")
 
 # Step 3: solve via 2Captcha with matching proxy
-proxy_str = f"ualfuslo:ukzubke2lnit@{PROXY_IP}"
+proxy_str = f"{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{PROXY_IP}"
 cookie_set = solve_datadome(captcha_url=captcha_url, page_url=URL,
                             user_agent=UA, proxy=proxy_str, proxytype="http")
 print("2captcha result:", (cookie_set[:70] + "...") if cookie_set else "FAILED")

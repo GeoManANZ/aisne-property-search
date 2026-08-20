@@ -33,9 +33,9 @@ non-blocked page wins.  Each result is saved as structured JSON plus raw
 HTML for fallback parsing.
 
 Usage:
-    python3 french-property-scraper.py --url <URL> [--engine direct|warp|lightpanda|stealth|cascade]
-    python3 french-property-scraper.py --input <file.txt> [--engine cascade]
-    python3 french-property-scraper.py                       # demo run
+    python3 french_property_scraper.py --url <URL> [--engine direct|warp|lightpanda|stealth|cascade]
+    python3 french_property_scraper.py --input <file.txt> [--engine cascade]
+    python3 french_property_scraper.py                       # demo run
 
 Output layout (per batch, under scans/<scan_id>/):
     results.json          structured per-URL data (price, surface, DPE...)
@@ -59,56 +59,19 @@ from pathlib import Path
 from typing import Optional
 
 # ---------------------------------------------------------------------------
-# CONFIG — endpoints and tuning knobs
+# CONFIG — single source of truth in config.py
 # ---------------------------------------------------------------------------
+from config import (
+    WARP_HOST, WARP_PORT, WARP_SOCKS5, FASTCRW_URL, SCAN_DIR,
+    BROWSER_HEADERS as _BROWSER_HEADERS,
+    BLOCK_PHRASES as _BLOCK_PHRASES,
+    WEBSHARE_PROXY_USER, WEBSHARE_PROXY_PASS, WEBSHARE_PROXY_LIST,
+    CHROMIUM_PATH as _CHROMIUM_PATH,
+    TWOCAPTCHA_API_KEY, DEFAULT_TIMEOUT_S, CAPTCHA_MAX_SPEND_USD,
+)
 
-# Cloudflare WARP SOCKS5 proxy.  Inside the Hermes docker network the
-# container is reachable by DNS name; from the host you'd use 127.0.0.1:1080.
-_WARP_HOST = "cloudflare-warp"          # docker DNS name
-_WARP_PORT = 1080                        # SOCKS5 endpoint
-_WARP_SOCKS5 = f"socks5h://{_WARP_HOST}:{_WARP_PORT}"
-
-# fastCRW Lightpanda browser API (MCP server runs on the same docker net)
-FASTCRW_URL = "http://fastcrw:3000/v1/scrape"
-
-# Where results land
-SCAN_DIR = Path("/workspace/hermes1/projects/aisne-property-search/scans")
-SCAN_DIR.mkdir(parents=True, exist_ok=True)
-
-# Realistic browser fingerprint to present at the HTTP layer
-_BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "DNT": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-    "Connection": "keep-alive",
-}
-
-# Phrases that indicate a WAF/Cloudflare block page (case-insensitive)
-_BLOCK_PHRASES = [
-    "attention required",
-    "sorry, you have been blocked",
-    "access denied",
-    "checking your browser",
-    "just a moment",
-    "enable javascript and cookies",
-    "are you a robot",
-    "challenge-platform",
-    "_cf_chl_opt",
-    "ray id",
-    "cf-chl-integrity",
-    "performing security verification",
-]
+_WARP_HOST = WARP_HOST
+_WARP_PORT = WARP_PORT
 
 # ---------------------------------------------------------------------------
 # ENGINE 1 + 2 — HTTP with headers, optionally through WARP SOCKS5
@@ -498,24 +461,8 @@ def scrape_via_stealth(
 # stealth) loads fully (544,500 chars, price 194 900 € extracted) via
 # stealth Chromium + a Webshare residential proxy.
 
-# Webshare residential proxy pool (from nz-mortgage-saas/scrapers/proxy_config.py)
+# Webshare residential proxy pool (single source of truth: config.py)
 # Format: "ip:port".  These are HTTP proxies with per-IP auth.
-WEBSHARE_PROXY_LIST = [
-    "31.59.20.176:6754",    # GB London
-    "45.38.107.97:6014",    # GB London
-    "198.105.121.200:6462", # GB London
-    "64.137.96.74:6641",    # ES Madrid
-    "198.23.243.226:6361",  # US LA
-    "38.154.185.97:6370",   # US
-    "84.247.60.125:6095",   # PL Warsaw
-    "191.96.254.138:6185",  # US
-]
-WEBSHARE_PROXY_USER = os.environ.get("WEBSHARE_USERNAME", "ualfuslo")
-WEBSHARE_PROXY_PASS = os.environ.get("WEBSHARE_PASSWORD", "ukzubke2lnit")
-
-# A known-good Chromium binary path (the venv's default browser may mismatch)
-_CHROMIUM_PATH = "/opt/hermes/.playwright/chromium-1228/chrome-linux64/chrome"
-
 
 def scrape_via_residential(url, timeout_s=40, max_proxies=4):
     """Fetch a URL through stealth Chromium + rotating Webshare residential IPs.

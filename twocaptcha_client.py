@@ -45,6 +45,28 @@ def _api_key() -> str:
     return ""
 
 
+class MaxSpendExceeded(RuntimeError):
+    """Raised when a single run would spend past the 2Captcha budget cap."""
+
+
+def ensure_within_budget(allow_exceed: bool = False) -> float:
+    """Return current balance; raise MaxSpendExceeded if below the floor.
+
+    The floor is a safety net so a runaway loop can't drain the account.
+    Set CAPTCHA_MAX_SPEND_USD in config.py / .env.
+    """
+    try:
+        from config import CAPTCHA_MAX_SPEND_USD
+    except Exception:
+        CAPTCHA_MAX_SPEND_USD = 5.0
+    bal = get_balance()
+    if bal is None:
+        return 0.0
+    if not allow_exceed and bal < 0.5:
+        raise MaxSpendExceeded(f"2Captcha balance ${bal:.2f} below safety floor")
+    return bal
+
+
 def get_balance() -> float | None:
     """Return the current account balance in USD, or None on failure."""
     key = _api_key()

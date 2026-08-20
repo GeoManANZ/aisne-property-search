@@ -33,8 +33,9 @@ PROXY_LIST = [
     "84.247.60.125:6095",   # PL Warsaw
     "191.96.254.138:6185",  # US
 ]
-PROXY_USER = "ualfuslo"
-PROXY_PASS = "ukzubke2lnit"
+from config import WEBSHARE_PROXY_USER, WEBSHARE_PROXY_PASS
+PROXY_USER = WEBSHARE_PROXY_USER
+PROXY_PASS = WEBSHARE_PROXY_PASS
 
 SITES = [
     ("Orpi (hard IP block)", "https://www.orpi.com/annonce-vente-immeuble-t5-laon-02000-8ab73979-6aa3-41bd-bb2f-89630451e57b/"),

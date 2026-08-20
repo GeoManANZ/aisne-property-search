@@ -250,24 +250,23 @@ def parse_paruvendu(html: str, source_url: str) -> list[dict]:
 # DETAIL PAGE SCANNER — get full listing data from individual ad pages
 # ---------------------------------------------------------------------------
 
+# Single normal import of the scraper module (no importlib / exec_module).
+# The scraper file is `french_property_scraper.py` (underscored) so it
+# imports as a regular package module.
+from french_property_scraper import (
+    extract_property_data,
+    WarpSession,
+    scrape_via_lightpanda,
+    scrape_via_stealth,
+    is_cloudflare_block,
+)
+
+
 def scan_detail_page(url: str, source: str, timeout: int = 30) -> dict:
     """
     Fetch and extract data from an individual listing detail page.
     Returns the enriched extract_property_data() result plus source info.
     """
-    from importlib import util
-    _scraper_path = Path(__file__).parent / "french-property-scraper.py"
-    if not _scraper_path.exists():
-        raise ImportError(f"Cannot load {_scraper_path}")
-
-    spec = util.spec_from_file_location("french_property_scraper", _scraper_path)
-    _scraper_mod = util.module_from_spec(spec)
-    spec.loader.exec_module(_scraper_mod)
-    extract_property_data = _scraper_mod.extract_property_data
-    WarpSession = _scraper_mod.WarpSession
-    scrape_via_lightpanda = _scraper_mod.scrape_via_lightpanda
-    is_cloudflare_block = _scraper_mod.is_cloudflare_block
-
     html = ""
     engine_used = "direct"
 
@@ -291,15 +290,6 @@ def scan_detail_page(url: str, source: str, timeout: int = 30) -> dict:
     # Fallback to fastCRW if still blocked
     if not html or is_cloudflare_block(html, 200):
         try:
-            from importlib import util
-            _scraper_path = Path(__file__).parent / "french-property-scraper.py"
-            if not _scraper_path.exists():
-                raise ImportError(f"Cannot load {_scraper_path}")
-
-            spec = util.spec_from_file_location("french_property_scraper", _scraper_path)
-            _scraper_mod = util.module_from_spec(spec)
-            spec.loader.exec_module(_scraper_mod)
-            scrape_via_lightpanda = _scraper_mod.scrape_via_lightpanda
             result = scrape_via_lightpanda(url)
             if result.get("success") and result.get("rawHtml"):
                 html = result["rawHtml"]
@@ -311,15 +301,6 @@ def scan_detail_page(url: str, source: str, timeout: int = 30) -> dict:
     # though interactive CAPTCHAs like DataDome will still block).
     if not html or is_cloudflare_block(html, 200):
         try:
-            from importlib import util
-            _scraper_path = Path(__file__).parent / "french-property-scraper.py"
-            if not _scraper_path.exists():
-                raise ImportError(f"Cannot load {_scraper_path}")
-
-            spec = util.spec_from_file_location("french_property_scraper", _scraper_path)
-            _scraper_mod = util.module_from_spec(spec)
-            spec.loader.exec_module(_scraper_mod)
-            scrape_via_stealth = _scraper_mod.scrape_via_stealth
             result = scrape_via_stealth(url, timeout_s=timeout)
             if result.get("success") and result.get("rawHtml"):
                 html = result["rawHtml"]

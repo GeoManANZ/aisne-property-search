@@ -27,10 +27,12 @@ import urllib.parse
 
 import socks  # PySocks
 
-WARP_HOST = "cloudflare-warp"
-WARP_PORT = 1080
-WEBSHARE_USER = "ualfuslo"
-WEBSHARE_PASS = "ukzubke2lnit"
+from config import WARP_HOST, WARP_PORT, WEBSHARE_PROXY_USER, WEBSHARE_PROXY_PASS
+
+WARP_HOST = WARP_HOST
+WARP_PORT = WARP_PORT
+WEBSHARE_USER = WEBSHARE_PROXY_USER
+WEBSHARE_PASS = WEBSHARE_PROXY_PASS
 
 
 class ChainedResponse:
