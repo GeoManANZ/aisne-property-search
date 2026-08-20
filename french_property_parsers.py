@@ -520,6 +520,163 @@ def parse_seloger(html: str, source_url: str = "") -> list[dict]:
     return results
 
 
+def parse_ufrn(html: str, source_url: str = "") -> list[dict]:
+    """Parse a SeLoger SERP page via its embedded JSON state (the CORRECT way).
+
+    SeLoger's micro-frontend embeds the full search state as JSON in the
+    initial HTML (no browser rendering needed):
+      - window["__UFRN_FETCHER__"] = JSON.parse("...") → cards + pagination
+      - window["__UFRN_STORE__"]   = JSON.parse("...") → app/filter state
+
+    Cards live at:
+      data.classified-serp-init-data.pageProps.classifiedsData.<CARD_ID>
+    each with id/location/hardFacts/energyClass/url/type/tags/...
+    Pagination: pageProps.page, pageProps.totalCount.
+
+    Falls back to parse_seloger (DOM) if the JSON isn't present.
+    Returns the same dict shape as parse_seloger.
+    """
+    if not html or len(html) < 3000:
+        return []
+    low = html.lower()
+    if any(b in low for b in ("geochallenge", "captcha-delivery", "prouvez que",
+                              "just a moment", "cf-chl-integrity")):
+        return []
+
+    page_props = None
+    m = re.search(r'window\["__UFRN_FETCHER__"\]\s*=\s*JSON\.parse\("(.+?)"\);',
+                  html, re.DOTALL)
+    if m:
+        try:
+            raw = m.group(1).encode("utf-8").decode("unicode_escape")
+            d = json.loads(raw)
+            page_props = (d.get("data", {})
+                           .get("classified-serp-init-data", {})
+                           .get("pageProps", {}))
+        except Exception:
+            page_props = None
+
+    if not page_props:
+        # structured JSON missing → fall back to DOM parsing
+        return parse_seloger(html, source_url)
+
+    classifieds = page_props.get("classifiedsData") or page_props.get("classifieds") or {}
+    # Normalise: classifiedsData is a dict keyed by card id; classifieds may be a list
+    cards_dict = {}
+    if isinstance(classifieds, dict):
+        cards_dict = classifieds
+    elif isinstance(classifieds, list):
+        for c in classifieds:
+            if isinstance(c, dict) and c.get("id"):
+                cards_dict[c["id"]] = c
+
+    results = []
+    seen = set()
+    for cid, card in cards_dict.items():
+        if not isinstance(card, dict):
+            continue
+        url = card.get("url") or ""
+        if isinstance(url, dict):
+            url = url.get("seoUrl") or url.get("href") or ""
+        if url and not url.startswith("http"):
+            url = "https://www.seloger.com" + url
+        if url and url in seen:
+            continue
+        if url:
+            seen.add(url)
+
+        # price / surface from hardFacts
+        price = surface = None
+        hf = card.get("hardFacts") or {}
+        if isinstance(hf, dict):
+            price = hf.get("price") or hf.get("priceValue") or hf.get("mainPrice")
+            if price is None:
+                for v in hf.values():
+                    if isinstance(v, dict) and (v.get("price") is not None or v.get("value") is not None):
+                        price = v.get("price") or v.get("value"); break
+            surface = hf.get("livingArea") or hf.get("area") or hf.get("surface")
+            if surface is None:
+                # hardFacts.facts is a list: [{"type":"overallSpace","value":"461 m²"},...]
+                for f in hf.get("facts") or []:
+                    if isinstance(f, dict):
+                        ftype = str(f.get("type") or "").lower()
+                        if any(x in ftype for x in ("space", "surface", "area", "size", "living")):
+                            surface = f.get("splitValue") or f.get("value")
+                            break
+                if surface is None:
+                    for v in hf.values():
+                        if isinstance(v, dict) and v.get("livingArea") is not None:
+                            surface = v["livingArea"]; break
+            # dict-coerce: price may be {"value": "...", "ariaLabel": "465000 €"}
+            if isinstance(price, dict):
+                price = price.get("ariaLabel") or price.get("value") or price.get("formatted")
+            if isinstance(surface, dict):
+                surface = surface.get("value") or surface.get("ariaLabel")
+            # number-coerce
+            if isinstance(price, str):
+                pm = re.search(r"[\d\s]{4,}", price)
+                price = _clean_seloger_price(pm.group(0)) if pm else None
+            if isinstance(surface, str):
+                sm = re.search(r"(\d+)", surface)
+                surface = int(sm.group(1)) if sm else None
+            # sanity: a real immeuble is never <10 m² — drop bogus values
+            if surface is not None and surface < 10:
+                surface = None
+
+        # location
+        location = None
+        loc = card.get("location") or {}
+        if isinstance(loc, dict):
+            location = (loc.get("label") or loc.get("city") or loc.get("name")
+                        or loc.get("displayName"))
+            if isinstance(location, dict):
+                location = location.get("label") or str(location)
+
+        # DPE
+        dpe = card.get("energyClass")
+        disp = card.get("display")
+        if dpe is None and isinstance(disp, dict):
+            dpe = disp.get("energy")
+        if isinstance(dpe, dict):
+            dpe = dpe.get("value")
+        if dpe and isinstance(dpe, str):
+            dm = re.search(r"\b([A-G])\b", dpe)
+            dpe = dm.group(1).upper() if dm else None
+
+        # title / description
+        title = ""
+        md = card.get("mainDescription") or card.get("description") or ""
+        if isinstance(md, dict):
+            title = md.get("text") or md.get("title") or ""
+        elif isinstance(md, str):
+            title = md
+        title = str(title).strip()[:250]
+
+        # agency
+        agency = None
+        prov = card.get("provider") or card.get("cardProvider") or {}
+        if isinstance(prov, dict):
+            agency = prov.get("title") or prov.get("name")
+
+        results.append({
+            "source": "seloger",
+            "url": url,
+            "title": title,
+            "price_eur": price,
+            "surface_m2": surface,
+            "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
+            "dpe_energy": dpe,
+            "location": location,
+            "agency": agency,
+            "ref": cid,
+            "raw_title": title,
+            "parsed_at": datetime.now(timezone.utc).isoformat(),
+            "source_page": source_url,
+        })
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # LADDER — crawl FNAIM + IAD + ParuVendu in sequence
 # ---------------------------------------------------------------------------
@@ -528,7 +685,7 @@ PARSERS = {
     "fnaim": parse_fnaim,
     "iad": parse_iad,
     "paruvendu": parse_paruvendu,
-    "seloger": parse_seloger,
+    "seloger": parse_ufrn,   # UFRN JSON extraction (falls back to DOM)
 }
 
 SOURCE_URLS = {
