@@ -79,16 +79,42 @@
 
 ## 4. Browser Automation — the click that actually works
 
-### 4.1 Pagination button click
+### 4.1 The REAL prize: SeLoger's BFF API (reverse-engineered 2026-08-20)
+The SPA fetches SERP data from a clean JSON API — no HTML parsing needed:
+
+```
+POST https://www.seloger.com/serp-bff/search
+Body: {
+  "criteria": {
+    "portals": ["SL"], "projectTypes": ["New_Build","Resale"],
+    "distributionTypes": ["Buy"], "estateTypes": ["Building"],
+    "location": {"placeIds": ["AD06FR2"]}
+  },
+  "paging": {"page": N, "size": 30, "order": "Default"}
+}
+Resp: {"totalCount": 257, "classifieds": [{"id": "..."} x30]}
+
+GET https://www.seloger.com/classifiedList/<id1>,<id2>,...
+Resp: [full card objects with price, location, livingArea, energy, url...]
+```
+
+- It's a POST (GET → 404 `Cannot GET`).
+- `serp-bff/search` returns ONLY ids — the full cards come from `classifiedList/<ids>`.
+- The browser earns the datadome cookie → then `page.evaluate(fetch(...))` rides it.
+- Companion endpoints: `serp-bff/search/effect`, `search-mfe-bff/v1/count`, `search-mfe-bff/places/data`.
+
+### 4.2 Pagination button click
 **Error (hours):** `page.mouse.click(x, y)` at coordinates FAILS (overlay hit-testing) even after `scrollIntoView({block:'center'})`.
 **Fix:** **Playwright `locator.click()`** — does proper actionability checks (auto-scroll, hit-target, real mouse events). Verified: page advances instantly.
+**Then:** pages 3+ fail with locator.click (element "not stable" during SPA re-render, 8s timeout).
+**Final fix:** **JS native `b.click()`** — `scrollIntoView({block:'center'})` + `b.click()` fires React's synthetic handler reliably. Verified: page 3 via JS click.
 **Also:** the pagination nav sits ~15,000px down the page (below suggested cards + market insights) — must auto-scroll.
 
-### 4.2 Sticky session IP rotation breaks sessions mid-sweep
+### 4.3 Sticky session IP rotation breaks sessions mid-sweep
 **Error:** Page 1 loads 30 cards, then a later page's click fails because the IP rotated and the new IP is challenged.
 **Fix:** Session-cycling at START + retry-on-stuck clicks mid-sweep. (Known remaining issue: page 3+ occasionally stuck — nav re-render timing.)
 
-### 4.3 Camoufox notes
+### 4.4 Camoufox notes
 - `geoip=True` recommended when using a proxy (LeakWarning) — but `geoip=False` works fine.
 - Browser context cookies ≠ page cookies — use `context.add_cookies()`.
 - Direct backbone proxy via `http://user:pass@host:port` in `proxy.server` works; credentials NOT embedded in URL for Playwright/Camoufox (timeout) — **actually verified: direct URL with creds DOES work for Camoufox**.
