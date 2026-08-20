@@ -195,6 +195,7 @@ class WebshareSession:
         self._proxy_list = list(WEBSHARE_PROXY_LIST)
         self._sticky = sticky          # pin one IP for the whole session
         self._sticky_proxy = None      # the pinned IP (once chosen)
+        self._sticky_proxy_ip = None   # the pinned IP string (chain mode)
 
     @property
     def available(self) -> bool:
@@ -223,8 +224,35 @@ class WebshareSession:
     def get(self, url: str, timeout: int = 20, **kwargs) -> requests.Response:
         if not self.available:
             raise RuntimeError("No Webshare proxies configured")
-        kwargs.setdefault("timeout", timeout)
-        return self._session.get(url, proxies=self._next_proxy(), **kwargs)
+        # Chain through WARP: the VPS's direct route to Webshare IPs is
+        # blocked (TCP timeout), but WARP reaches them.  See webshare_chain.py.
+        try:
+            from webshare_chain import ChainedWebshareSession
+            ip = self._next_proxy_ip()
+            cs = ChainedWebshareSession(proxy_ip=ip, timeout=timeout)
+            cr = cs.get(url, timeout=timeout)
+            # shape into a requests.Response-like object
+            r = requests.Response()
+            r.status_code = cr.status_code
+            r._content = cr.text.encode("utf-8", errors="replace")
+            r.headers = cr.headers
+            r.url = url
+            return r
+        except ImportError:
+            kwargs.setdefault("timeout", timeout)
+            return self._session.get(url, proxies=self._next_proxy(), **kwargs)
+
+    def _next_proxy_ip(self) -> str:
+        """Pick the next proxy IP (round-robin, sticky-aware)."""
+        if self._sticky and self._sticky_proxy_ip:
+            return self._sticky_proxy_ip
+        if not self._proxy_list:
+            self._proxy_list = list(WEBSHARE_PROXY_LIST)
+        ip = self._proxy_list.pop(0)
+        self._proxy_list.append(ip)  # rotate
+        if self._sticky and self._sticky_proxy_ip is None:
+            self._sticky_proxy_ip = ip
+        return ip
 
 
 # ---------------------------------------------------------------------------
@@ -746,20 +774,62 @@ def scrape_via_camoufox(url, timeout_s=45, use_proxy=False, warmup=True):
 # ENGINE 9 — DataDome bypass via 2Captcha (SeLoger / Logic-Immo)
 # ---------------------------------------------------------------------------
 
+def _parse_datadome_dd(body: str) -> dict:
+    """Extract the DataDome `var dd={...}` object from a challenge page.
+
+    The dd object carries the challenge fields (cid, hsh, t, s, e, host)
+    needed to build the geo.captcha-delivery.com solve URL.
+    """
+    start = body.find("var dd=")
+    if start == -1:
+        return {}
+    i = body.find("{", start)
+    depth = 0
+    for j in range(i, len(body)):
+        if body[j] == "{":
+            depth += 1
+        elif body[j] == "}":
+            depth -= 1
+            if depth == 0:
+                raw = body[i:j + 1].replace("'", '"')
+                try:
+                    import json
+                    return json.loads(raw)
+                except Exception:
+                    import re
+                    return dict(re.findall(r'"(\w+)":"([^"]*)"', raw))
+    return {}
+
+
+def _build_datadome_challenge_url(dd: dict, page_url: str) -> str:
+    """Build the geo.captcha-delivery.com challenge URL from dd fields."""
+    import urllib.parse
+    cid = dd.get("cid", "")
+    hsh = dd.get("hsh", "")
+    t = dd.get("t", "fe")
+    s_val = dd.get("s", "")
+    e_val = dd.get("e", "")
+    host = dd.get("host", "geo.captcha-delivery.com")
+    referer = urllib.parse.quote(page_url, safe="")
+    return (f"https://{host}/captcha/?initialCid={urllib.parse.quote(cid)}"
+            f"&hash={hsh}&cid={urllib.parse.quote(cid)}&t={t}"
+            f"&referer={referer}&s={s_val}&e={e_val}")
+
+
 def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
     """Bypass DataDome (SeLoger / Logic-Immo) by solving it via 2Captcha.
 
     DataDome is NOT an image captcha — it's a behavioural + token system.
-    The flow:
-      1. fetch the URL through a proxy → DataDome redirects to a
-         geo.captcha-delivery.com challenge URL
-      2. submit that challenge URL to 2Captcha (with the SAME proxy + UA so
-         the returned datadome cookie matches our egress IP)
-      3. re-fetch the URL carrying the datadome cookie → real listing HTML
+    The flow (verified live 2026-08-20, ~$0.0015/solve):
+      1. fetch the URL through the WARP→Webshare chain → DataDome serves a
+         403 page containing `var dd={...}` with challenge fields
+      2. build the geo.captcha-delivery.com challenge URL from those fields
+      3. submit to 2Captcha with the SAME proxy + UA so the returned
+         datadome cookie matches our egress IP
+      4. re-fetch the URL carrying the datadome cookie → real listing HTML
 
-    This is a PAID service (~$0.003/solve).  Used ONLY when the earlier
-    engines all failed with a DataDome block (early-routing classifier sends
-    'datadome' here).  Conservative — one solve per URL.
+    This is a PAID service.  Used ONLY when the early-routing classifier
+    sends 'datadome' here.  Conservative — one solve per URL.
 
     Args:
         url:       target SeLoger/Logic-Immo URL
@@ -773,35 +843,38 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
     """
     import re
     from twocaptcha_client import solve_datadome
+    from webshare_chain import ChainedWebshareSession
 
     if user_agent is None:
         user_agent = _BROWSER_HEADERS["User-Agent"]
 
-    # Build the requests session + optional proxy
-    s = requests.Session()
-    s.headers.update(_BROWSER_HEADERS)
-    s.headers["User-Agent"] = user_agent
-    proxies = None
-    if proxy:
-        p = f"http://{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}"
-        proxies = {"http": p, "https": p}
+    # Pick a proxy: explicit, or round-robin from the config list.
+    if proxy is None:
+        import random
+        proxy = random.choice(WEBSHARE_PROXY_LIST) if WEBSHARE_PROXY_LIST else None
+    if proxy is None:
+        return {"success": False, "rawHtml": "", "status": 0,
+                "error": "no Webshare proxy available for DataDome solve",
+                "blocked": True}
 
     try:
-        # Step 1: fetch → find the DataDome challenge URL
-        r = s.get(url, proxies=proxies, timeout=timeout_s, allow_redirects=True)
-        low = (r.url + " " + r.text).lower()
-        m = re.search(r"https://geo\.captcha-delivery\.com[^\"'\s)]+", low, re.I)
-        if not m:
-            # If no challenge, we might already have real content
+        # Step 1: fetch through the chain → get the dd object
+        s = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
+                                   headers={"User-Agent": user_agent,
+                                            "Accept-Language": "fr-FR,fr;q=0.9"})
+        r = s.get(url)
+        dd = _parse_datadome_dd(r.text)
+        if not dd:
+            # no challenge → maybe real content already
             if not is_cloudflare_block(r.text, r.status_code) and len(r.text) > 3000:
                 return {"success": True, "rawHtml": r.text, "status": r.status_code,
                         "error": None, "blocked": False}
             return {"success": False, "rawHtml": r.text, "status": r.status_code,
-                    "error": "no DataDome challenge URL found", "blocked": True}
-        captcha_url = m.group(0)
+                    "error": "no DataDome dd object found", "blocked": True}
+        captcha_url = _build_datadome_challenge_url(dd, url)
 
         # Step 2: solve via 2Captcha with matching proxy + UA
-        proxy_str = f"{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}" if proxy else ""
+        proxy_str = f"{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}"
         cookie_set = solve_datadome(captcha_url=captcha_url, page_url=url,
                                     user_agent=user_agent, proxy=proxy_str,
                                     proxytype="http")
@@ -814,11 +887,19 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
         if not mm:
             return {"success": False, "rawHtml": "", "status": 0,
                     "error": "no datadome cookie in solve response", "blocked": True}
-        s.cookies.set("datadome", mm.group(1), domain=urllib.parse.urlparse(url).netloc)
-        r2 = s.get(url, proxies=proxies, timeout=timeout_s)
+        s2 = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
+                                    headers={"User-Agent": user_agent,
+                                             "Accept-Language": "fr-FR,fr;q=0.9",
+                                             "Cookie": f"datadome={mm.group(1)}"})
+        r2 = s2.get(url)
         blocked = is_cloudflare_block(r2.text, r2.status_code)
-        return {"success": not blocked, "rawHtml": r2.text, "status": r2.status_code,
-                "error": None if not blocked else "still blocked after datadome solve",
+        # SeLoger serves the SPA with data even on 404 for search URLs
+        has_data = len(r2.text) > 3000 and ("annonce" in r2.text.lower()
+                                            or "prix" in r2.text.lower())
+        return {"success": (not blocked and has_data), "rawHtml": r2.text,
+                "status": r2.status_code,
+                "error": None if (not blocked and has_data)
+                        else f"still blocked after datadome solve (status {r2.status_code})",
                 "blocked": blocked}
     except Exception as e:
         return {"success": False, "rawHtml": "", "status": 0,
