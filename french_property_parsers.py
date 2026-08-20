@@ -693,11 +693,11 @@ def ladder(
                 "url": url,
                 "source": item.get("source") or detail.get("source"),
                 "title": detail.get("title") or item.get("title"),
-                "price_eur": detail.get("price_eur") or item.get("price"),
+                "price_eur": detail.get("price_eur") or item.get("price_eur") or item.get("price"),
                 "surface_m2": detail.get("surface_m2") or item.get("surface_m2"),
-                "dpe_energy": detail.get("dpe_energy"),
+                "dpe_energy": detail.get("dpe_energy") or item.get("dpe_energy"),
                 "location": detail.get("location") or item.get("location"),
-                "agency": detail.get("agency"),
+                "agency": detail.get("agency") or item.get("agency"),
                 "description": detail.get("description_snippet") or item.get("raw_text"),
             })
         db.bulk_upsert(db_records)

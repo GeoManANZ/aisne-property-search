@@ -9,5 +9,16 @@
         "path": "/"
       }
     ]
+  },
+  "84.247.60.125|www.seloger.com": {
+    "saved_at": 1787217172.6457329,
+    "cookies": [
+      {
+        "name": "datadome",
+        "value": "V5cryzWNKBVRW1SRqaPreH2oTmv0N9XgN1GIZ5hFWLdywQkrBFW7aaEDn~l3Wo0b7TphlNxgS7TdGxA5i4DbzABXG2w0lIm8VvHubK0LbcBWT0pxwbrXKmbLsoSEbGIo",
+        "domain": ".www.seloger.com",
+        "path": "/"
+      }
+    ]
   }
 }
