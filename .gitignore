@@ -18,3 +18,4 @@ scans/
 
 # Local DB (committed as schema, not data)
 # listings.db
+*.html
