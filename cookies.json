@@ -20,5 +20,16 @@
         "path": "/"
       }
     ]
+  },
+  "142.111.67.146|www.seloger.com": {
+    "saved_at": 1787217258.9236207,
+    "cookies": [
+      {
+        "name": "datadome",
+        "value": "eko1~NhzhJh5Nm1Pd7YeJaJ~Ro6yn2qk_RV29BHc7WeqHLRWjE8QAxp7nogtXVtlnA6AS_sUYNakevaq0BS3VXlfWo1VFf1KZxZ4jo2V9c9dFZQbhfeAaA~Svw1Gye5Z",
+        "domain": ".www.seloger.com",
+        "path": "/"
+      }
+    ]
   }
 }

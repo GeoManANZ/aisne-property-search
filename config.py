@@ -89,6 +89,51 @@ if not WEBSHARE_PROXY_LIST:
     WEBSHARE_PROXY_LIST = list(_WS_PROXY_LIST_FALLBACK)
 
 # ---------------------------------------------------------------------------
+# Webshare ROTATING residential plan (backbone, added 2026-08-20)
+# ---------------------------------------------------------------------------
+# Backbone = p.webshare.io:80 (hostname may not resolve from Docker DNS — use
+# the DoH-resolved IPs: 185.24.10.165, 104.36.49.13, 91.242.215.155, ...).
+# Username suffix is the STICKY SESSION:
+#   - no suffix (ualfuslo-rotate)  → rotate IP per request
+#   - numbered   (ualfuslo-1)      → same residential IP every request
+# The datadome cookie is IP-bound, so solve + refetch MUST use the same
+# numbered session (e.g. ualfuslo-7 for both steps).
+WEBSHARE_ROTATE_HOSTS = [
+    "185.24.10.165:80",   # backbone anycast (ap-southeast-2)
+    "104.36.49.13:80",
+    "91.242.215.155:80",
+]
+WEBSHARE_ROTATE_USER = os.environ.get("WEBSHARE_ROTATE_USER", "ualfuslo-rotate")
+# numbered sticky sessions use base username WITHOUT the -rotate suffix:
+# the download list gives ualfuslo-1 .. ualfuslo-<N>, not ualfuslo-rotate-N.
+WEBSHARE_ROTATE_BASE_USER = os.environ.get("WEBSHARE_ROTATE_BASE_USER", "ualfuslo")
+WEBSHARE_ROTATE_SESSION = os.environ.get("WEBSHARE_ROTATE_SESSION", "1")
+WEBSHARE_ROTATE_URL = f"http://{WEBSHARE_ROTATE_BASE_USER}-{WEBSHARE_ROTATE_SESSION}:{WEBSHARE_PROXY_PASS}@{WEBSHARE_ROTATE_HOSTS[0]}"
+# number of numbered sticky sessions the plan provides (from the download list)
+WEBSHARE_ROTATE_SESSIONS = 20
+
+
+def webshare_rotate_url(session: int | None = None, host_idx: int = 0,
+                        country: str | None = None) -> str:
+    """Build a rotating-plan proxy URL.
+
+    session=None → per-request rotation (ualfuslo-rotate)
+    session=N   → sticky residential IP (ualfuslo-N)
+    country=fr  → French residential IPs (ualfuslo-fr, rotates within FR)
+    BOTH        → French AND sticky (ualfuslo-fr-1) — best for DataDome
+    """
+    host = WEBSHARE_ROTATE_HOSTS[host_idx % len(WEBSHARE_ROTATE_HOSTS)]
+    if session is None and not country:
+        user = WEBSHARE_ROTATE_USER          # ualfuslo-rotate (rotates)
+    elif session is None:
+        user = f"{WEBSHARE_ROTATE_BASE_USER}-{country}"  # ualfuslo-fr
+    elif country:
+        user = f"{WEBSHARE_ROTATE_BASE_USER}-{country}-{session}"  # ualfuslo-fr-1
+    else:
+        user = f"{WEBSHARE_ROTATE_BASE_USER}-{session}"  # ualfuslo-N (sticky)
+    return f"http://{user}:{WEBSHARE_PROXY_PASS}@{host}"
+
+# ---------------------------------------------------------------------------
 # Proxy transports
 # ---------------------------------------------------------------------------
 # Cloudflare WARP SOCKS5 (docker DNS name; host uses 127.0.0.1:1080)

@@ -181,3 +181,108 @@ class ChainedWebshareSession:
                 s.close()
             except Exception:
                 pass
+
+
+class RotatingWebshareSession:
+    """Requests-like session through the Webshare ROTATING residential plan.
+
+    Uses the backbone endpoint (p.webshare.io:80 → anycast IPs) DIRECTLY —
+    no WARP chain needed, because the backbone IPs are reachable from the
+    VPS (verified: 185.24.10.165:80 etc. are OPEN).  Sticky sessions give
+    the SAME residential IP for a numbered username (ualfuslo-7), which is
+    required for IP-bound cookies like `datadome`.
+
+    session=None → rotate IP per request (ualfuslo-rotate)
+    session=N   → sticky IP (ualfuslo-N)
+    """
+
+    def __init__(self, session: int | None = None, timeout: int = 45,
+                 headers: dict | None = None, host_idx: int = 0,
+                 country: str | None = None):
+        from config import webshare_rotate_url, WEBSHARE_PROXY_PASS
+        self.timeout = timeout
+        self.headers = headers or {
+            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) "
+                           "Chrome/124.0.0.0 Safari/537.36"),
+            "Accept-Language": "fr-FR,fr;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        self.session = session
+        self.country = country
+        url = webshare_rotate_url(session, host_idx, country)
+        # url is http://user:pass@host:port — parse for connect
+        self.proxy_url = url
+        _p = urllib.parse.urlparse(url)
+        self.proxy_host, self.proxy_port = _p.hostname, _p.port or 80
+        self.proxy_user = urllib.parse.unquote(_p.username or "")
+        self.proxy_pass = urllib.parse.unquote(_p.password or "")
+
+    def proxy_auth_str(self) -> str:
+        """'user:pass@host:port' for passing to 2Captcha."""
+        return f"{self.proxy_user}:{self.proxy_pass}@{self.proxy_host}:{self.proxy_port}"
+
+    def _connect(self) -> socket.socket:
+        s = socket.create_connection((self.proxy_host, self.proxy_port),
+                                     timeout=self.timeout)
+        return s
+
+    def _proxy_auth(self) -> str:
+        raw = f"{self.proxy_user}:{self.proxy_pass}"
+        return base64.b64encode(raw.encode()).decode()
+
+    def get(self, url: str, headers: dict | None = None) -> ChainedResponse:
+        """GET url through the rotating proxy (CONNECT for https)."""
+        hdrs = dict(self.headers)
+        if headers:
+            hdrs.update(headers)
+        parsed = urllib.parse.urlparse(url)
+        target_host = parsed.netloc
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        auth = self._proxy_auth()
+
+        s = self._connect()
+        try:
+            if parsed.scheme == "https":
+                connect_req = (f"CONNECT {target_host}:{port} HTTP/1.1\r\n"
+                               f"Host: {target_host}:{port}\r\n"
+                               f"Proxy-Authorization: Basic {auth}\r\n"
+                               f"\r\n")
+                s.sendall(connect_req.encode())
+                resp = s.recv(4096)
+                if b" 200 " not in resp.split(b"\r\n", 1)[0]:
+                    return ChainedResponse(407, "", {})
+                ctx = ssl.create_default_context()
+                tls = ctx.wrap_socket(s, server_hostname=target_host)
+                path = parsed.path or "/"
+                if parsed.query:
+                    path += "?" + parsed.query
+                head = (f"GET {path} HTTP/1.1\r\nHost: {target_host}\r\n"
+                        f"Connection: close\r\n")
+                for k, v in hdrs.items():
+                    head += f"{k}: {v}\r\n"
+                head += "\r\n"
+                tls.sendall(head.encode())
+                status, hdrs2, body = self._read_headers(tls)
+                full = self._body(tls, hdrs2, body)
+                return ChainedResponse(status, full.decode(errors="replace"), hdrs2)
+            else:
+                head = (f"GET {url} HTTP/1.1\r\nHost: {target_host}\r\n"
+                        f"Proxy-Authorization: Basic {auth}\r\n"
+                        f"Connection: close\r\n")
+                for k, v in hdrs.items():
+                    head += f"{k}: {v}\r\n"
+                head += "\r\n"
+                s.sendall(head.encode())
+                status, hdrs2, body = self._read_headers(s)
+                full = self._body(s, hdrs2, body)
+                return ChainedResponse(status, full.decode(errors="replace"), hdrs2)
+        finally:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+    # reuse the header/body readers from ChainedWebshareSession
+    _read_headers = ChainedWebshareSession._read_headers
+    _body = ChainedWebshareSession._body

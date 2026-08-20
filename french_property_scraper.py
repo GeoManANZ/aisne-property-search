@@ -901,7 +901,7 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
     """
     import re
     from twocaptcha_client import solve_datadome
-    from webshare_chain import ChainedWebshareSession
+    from webshare_chain import RotatingWebshareSession
 
     if user_agent is None:
         # One consistent fingerprint for solve + all requests (review item 16)
@@ -911,146 +911,123 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
         except Exception:
             user_agent = _BROWSER_HEADERS["User-Agent"]
 
-    # Pick a proxy: explicit, or a healthy round-robin one from the config.
-    if proxy is None:
-        try:
-            from proxy_health import pick_healthy
-            proxy = pick_healthy()
-        except Exception:
-            proxy = None
-        if proxy is None:
-            import random
-            proxy = random.choice(WEBSHARE_PROXY_LIST) if WEBSHARE_PROXY_LIST else None
-    if proxy is None:
-        return ScrapeResult(success=False, status=0, engine="datadome",
-                            error="no Webshare proxy available for DataDome solve",
-                            blocked=True)
-
+    # Use the rotating residential plan with a French + sticky session.
+    # This is the proven winner: the same French residential IP for BOTH the
+    # 2Captcha solve and the refetch, so the IP-bound datadome cookie matches.
+    # Some French IPs are flagged by DataDome (solve returns UNSOLVABLE) — we
+    # cycle through sessions 1..8 until one solves.
     try:
-        domain = urllib.parse.urlparse(url).netloc
-        from cookie_store import get_cookies, save_cookies
+        from config import WEBSHARE_ROTATE_SESSIONS
+        max_sessions = max(1, int(WEBSHARE_ROTATE_SESSIONS))
+    except Exception:
+        max_sessions = 8
+    sessions_to_try = list(range(1, min(max_sessions, 9) + 1))
+    if proxy is not None and isinstance(proxy, int):
+        # caller passed a session number directly
+        sessions_to_try = [proxy]
 
-        # Step 0: reuse a saved datadome cookie for this (proxy, domain) pair —
-        # DataDome cookies are IP-bound and live ~6h.  Skipping the paid solve
-        # here is the highest-leverage cost win (the review's top recommendation).
-        saved = get_cookies(proxy.split(":")[0], domain)
-        saved_dd = None
-        for c in saved:
-            if c.get("name") == "datadome":
-                saved_dd = c.get("value")
-                break
-        if saved_dd:
-            s0 = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
-                                        headers={"User-Agent": user_agent,
-                                                 "Accept-Language": "fr-FR,fr;q=0.9",
-                                                 "Cookie": f"datadome={saved_dd}"})
-            r0 = s0.get(url)
-            if not is_cloudflare_block(r0.text, r0.status_code) and len(r0.text) > 3000:
-                return ScrapeResult(success=True, html=r0.text, status=r0.status_code,
-                                    engine="datadome", blocked=False,
-                                    proxy_ip=proxy.split(":")[0], reused_cookie=True)
+    last_error = None
+    for sess in sessions_to_try:
+        try:
+            result = _datadome_via_rotate(
+                url=url, timeout_s=timeout_s, user_agent=user_agent,
+                session=sess, country="fr")
+            if result.success:
+                return result
+            last_error = result.error or f"session fr-{sess} failed"
+            log_info(f"datadome session fr-{sess} failed: {last_error}")
+        except Exception as e:
+            last_error = f"session fr-{sess}: {type(e).__name__}: {str(e)[:80]}"
+            log_info(last_error)
+    return ScrapeResult(success=False, status=0, engine="datadome",
+                        blocked=True, error=f"all rotating sessions failed: {last_error}")
 
-        # Step 1: fetch through the chain → get the dd object
-        s = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
-                                   headers={"User-Agent": user_agent,
-                                            "Accept-Language": "fr-FR,fr;q=0.9"})
-        r = s.get(url)
-        dd = _parse_datadome_dd(r.text)
-        if not dd:
-            # no challenge → maybe real content already
-            if not is_cloudflare_block(r.text, r.status_code) and len(r.text) > 3000:
-                return ScrapeResult(success=True, html=r.text, status=r.status_code,
-                                    engine="datadome", blocked=False,
-                                    proxy_ip=proxy.split(":")[0])
-            return ScrapeResult(success=False, html=r.text, status=r.status_code,
-                                engine="datadome", blocked=True,
-                                error="no DataDome dd object found",
-                                proxy_ip=proxy.split(":")[0])
-        captcha_url = _build_datadome_challenge_url(dd, url)
-        log_debug(f"datadome dd={ {k: dd.get(k) for k in ('cid','hsh','t','s','e','host','rt')} }")
-        log_info(f"datadome captcha_url={captcha_url[:120]}...")
 
-        # Step 2+3: solve via 2Captcha, re-fetch with the cookie.  Retry once
-        # with a different proxy if the first refetch is still challenged —
-        # DataDome sometimes rejects a freshly solved cookie on a flaky hop.
-        last_error = None
-        for attempt in range(2):
-            proxy_str = f"{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}"
-            cookie_set = solve_datadome(captcha_url=captcha_url, page_url=url,
-                                        user_agent=user_agent, proxy=proxy_str,
-                                        proxytype="http")
-            if not cookie_set or cookie_set.startswith("ERROR"):
-                last_error = f"2captcha solve failed: {cookie_set}"
-                # on retry, swap to another healthy proxy before solving again
-                if attempt == 0:
-                    try:
-                        from proxy_health import healthy_proxies
-                        others = [p for p in healthy_proxies()
-                                  if p != proxy and p.split(":")[0] != proxy.split(":")[0]]
-                        if others:
-                            import random as _r
-                            proxy = _r.choice(others)
-                            proxy_str = f"{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}"
-                            cookie_set = solve_datadome(
-                                captcha_url=captcha_url, page_url=url,
-                                user_agent=user_agent, proxy=proxy_str,
-                                proxytype="http")
-                            if not cookie_set or cookie_set.startswith("ERROR"):
-                                last_error = f"2captcha solve failed (retry): {cookie_set}"
-                                continue
-                        else:
-                            continue
-                    except Exception:
-                        continue
-                else:
-                    break
+def _datadome_via_rotate(url: str, timeout_s: int, user_agent: str,
+                         session: int, country: str = "fr") -> ScrapeResult:
+    """Solve + fetch DataDome through one rotating sticky session.
 
-            mm = re.search(r"datadome=([^;]+)", cookie_set or "")
-            if not mm:
-                last_error = "no datadome cookie in solve response"
-                continue
+    Uses RotatingWebshareSession(country=country, session=session) for BOTH
+    the challenge fetch, the 2Captcha solve (SOCKS5 proxytype — proven to
+    solve, HTTP returns UNSOLVABLE), and the refetch carrying the cookie.
+    """
+    import re
+    from twocaptcha_client import solve_datadome
+    from webshare_chain import RotatingWebshareSession
+    from cookie_store import get_cookies, save_cookies
 
-            s2 = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
-                                        headers={"User-Agent": user_agent,
-                                                 "Accept-Language": "fr-FR,fr;q=0.9",
-                                                 "Cookie": f"datadome={mm.group(1)}"})
-            r2 = s2.get(url)
-            blocked = is_cloudflare_block(r2.text, r2.status_code)
-            # SeLoger serves the SPA with data even on 404 for search URLs
-            has_data = len(r2.text) > 3000 and ("annonce" in r2.text.lower()
-                                                or "prix" in r2.text.lower())
-            success = (not blocked and has_data)
-            if success:
-                # Save the solved datadome cookie keyed by (proxy IP, domain)
-                # so the next run for this pair skips the paid solve.
-                save_cookies(proxy.split(":")[0], domain,
-                             [{"name": "datadome", "value": mm.group(1),
-                               "domain": "." + domain, "path": "/"}])
-                return ScrapeResult(success=True, html=r2.text, status=r2.status_code,
-                                    engine="datadome", blocked=False,
-                                    proxy_ip=proxy.split(":")[0],
-                                    reused_cookie=False, error=None)
-            last_error = (f"still blocked after datadome solve "
-                          f"(status {r2.status_code})")
-            # try once more with a fresh proxy before giving up
-            if attempt == 0:
-                try:
-                    from proxy_health import healthy_proxies
-                    others = [p for p in healthy_proxies()
-                              if p.split(":")[0] != proxy.split(":")[0]]
-                    if others:
-                        import random as _r
-                        proxy = _r.choice(others)
-                except Exception:
-                    pass
+    domain = urllib.parse.urlparse(url).netloc
 
-        return ScrapeResult(success=False, html="", status=0, engine="datadome",
-                            blocked=True, proxy_ip=proxy.split(":")[0],
-                            reused_cookie=False, error=last_error)
-    except Exception as e:
+    def _new_session(cookie: str | None = None) -> RotatingWebshareSession:
+        hdrs = {"User-Agent": user_agent, "Accept-Language": "fr-FR,fr;q=0.9"}
+        if cookie:
+            hdrs["Cookie"] = f"datadome={cookie}"
+        return RotatingWebshareSession(session=session, timeout=timeout_s,
+                                       country=country, headers=hdrs)
+
+    # Step 0: try a saved cookie first (IP-bound; cookie_store keyed by the
+    # sticky session username + domain).
+    proxy_key = f"{country}-{session}"
+    saved_dd = None
+    for c in get_cookies(proxy_key, domain):
+        if c.get("name") == "datadome":
+            saved_dd = c.get("value")
+            break
+    if saved_dd:
+        s0 = _new_session(saved_dd)
+        r0 = s0.get(url)
+        if not is_cloudflare_block(r0.text, r0.status_code) and len(r0.text) > 3000:
+            return ScrapeResult(success=True, html=r0.text, status=r0.status_code,
+                                engine="datadome", blocked=False,
+                                proxy_ip=f"{country}-{session}", reused_cookie=True)
+
+    # Step 1: fetch to get the dd challenge object
+    s = _new_session()
+    r = s.get(url)
+    dd = _parse_datadome_dd(r.text)
+    if not dd:
+        if not is_cloudflare_block(r.text, r.status_code) and len(r.text) > 3000:
+            return ScrapeResult(success=True, html=r.text, status=r.status_code,
+                                engine="datadome", blocked=False,
+                                proxy_ip=f"{country}-{session}")
+        return ScrapeResult(success=False, html=r.text, status=r.status_code,
+                            engine="datadome", blocked=True,
+                            error="no DataDome dd object found",
+                            proxy_ip=f"{country}-{session}")
+    captcha_url = _build_datadome_challenge_url(dd, url)
+    log_debug(f"datadome fr-{session} dd={ {k: dd.get(k) for k in ('cid','hsh','t','s','e','host','rt')} }")
+    log_info(f"datadome fr-{session} captcha_url={captcha_url[:110]}...")
+
+    # Step 2: solve via 2Captcha using SOCKS5 proxytype through the SAME session
+    cookie_set = solve_datadome(captcha_url=captcha_url, page_url=url,
+                                user_agent=user_agent,
+                                proxy=s.proxy_auth_str(), proxytype="socks5")
+    if not cookie_set or cookie_set.startswith("ERROR"):
         return ScrapeResult(success=False, status=0, engine="datadome",
-                            blocked=False, proxy_ip=(proxy or "").split(":")[0],
-                            error=f"datadome engine error: {type(e).__name__}: {str(e)[:120]}")
+                            blocked=True, proxy_ip=f"{country}-{session}",
+                            error=f"2captcha solve failed: {cookie_set}")
+    mm = re.search(r"datadome=([^;]+)", cookie_set)
+    if not mm:
+        return ScrapeResult(success=False, status=0, engine="datadome",
+                            blocked=True, proxy_ip=f"{country}-{session}",
+                            error="no datadome cookie in solve response")
+
+    # Step 3: refetch carrying the cookie through the SAME session
+    s2 = _new_session(mm.group(1))
+    r2 = s2.get(url)
+    blocked = is_cloudflare_block(r2.text, r2.status_code)
+    has_data = len(r2.text) > 3000 and ("annonce" in r2.text.lower()
+                                        or "prix" in r2.text.lower())
+    success = (not blocked and has_data)
+    if success:
+        save_cookies(proxy_key, domain,
+                     [{"name": "datadome", "value": mm.group(1),
+                       "domain": "." + domain, "path": "/"}])
+    return ScrapeResult(success=success, html=r2.text, status=r2.status_code,
+                        engine="datadome", blocked=blocked,
+                        proxy_ip=f"{country}-{session}", reused_cookie=False,
+                        error=None if success
+                        else f"still blocked after solve (status {r2.status_code})")
 
 
 # ---------------------------------------------------------------------------
