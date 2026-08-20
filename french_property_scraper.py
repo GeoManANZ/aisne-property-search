@@ -1090,14 +1090,22 @@ _CHALLENGE_ROUTING = {
 }
 
 
-def route_engines(challenge_type: str, full_cascade: list[str]) -> list[str]:
+def route_engines(challenge_type: str, full_cascade: list[str],
+                  domain: str | None = None) -> list[str]:
     """Return an optimised engine order for the detected challenge type.
 
-    If we already know the challenge, use the targeted routing table
-    (most-likely-to-succeed engines first).  Otherwise fall back to the
-    provided full cascade.
+    Adaptive: if we have historical success metrics for this (domain,
+    challenge) pair, order engines by success rate (best first).  Otherwise
+    use the static routing table (most-likely-to-succeed engines first) and
+    finally fall back to the provided full cascade.
     """
     if challenge_type in _CHALLENGE_ROUTING and _CHALLENGE_ROUTING[challenge_type]:
+        if domain:
+            try:
+                from engine_metrics import best_engine_for
+                return best_engine_for(domain, challenge_type)
+            except Exception:
+                pass
         return _CHALLENGE_ROUTING[challenge_type]
     return full_cascade
 
@@ -1316,7 +1324,8 @@ def scan_url(
                 "diagnostics": log_lines, "scan_time_s": 0.0,
             }
         elif challenge != "unknown":
-            ordered = route_engines(challenge, engines)
+            _domain = urllib.parse.urlparse(url).netloc
+            ordered = route_engines(challenge, engines, domain=_domain)
             log_lines.append(f"  → challenge classifier: {challenge} — routing to: "
                              f"{', '.join(ordered)}")
             engines = ordered
@@ -1407,6 +1416,21 @@ def scan_url(
             # Analyse
             blocked = is_cloudflare_block(html, status)
             diag = diagnosis(html, status, engine)
+
+            # Record engine outcome for adaptive routing (review item 6/13)
+            try:
+                from engine_metrics import record_outcome
+                _chal = classify_challenge(html, status)
+                record_outcome(
+                    domain=urllib.parse.urlparse(url).netloc,
+                    challenge=_chal, engine=engine,
+                    success=(not blocked and len(html) > 500),
+                    timing_s=time.time() - start,
+                    proxy_ip=crash_data.get("proxy_ip") if hasattr(crash_data, "get") else None,
+                    error=crash_data.get("error") if hasattr(crash_data, "get") else None,
+                )
+            except Exception:
+                pass
 
             log_lines.append(f"    → {diag}")
             log_lines.append("")

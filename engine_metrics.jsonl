@@ -1,0 +1,6 @@
+{"ts": 1787214636.5241246, "domain": "www.seloger.com", "challenge": "datadome", "engine": "datadome", "success": true, "timing_s": 10.0, "proxy_ip": null, "error": ""}
+{"ts": 1787214636.5245693, "domain": "www.seloger.com", "challenge": "datadome", "engine": "datadome", "success": true, "timing_s": 10.0, "proxy_ip": null, "error": ""}
+{"ts": 1787214636.5248427, "domain": "www.seloger.com", "challenge": "datadome", "engine": "datadome", "success": true, "timing_s": 10.0, "proxy_ip": null, "error": ""}
+{"ts": 1787214636.5251734, "domain": "www.seloger.com", "challenge": "datadome", "engine": "datadome", "success": true, "timing_s": 10.0, "proxy_ip": null, "error": ""}
+{"ts": 1787214636.5255156, "domain": "www.seloger.com", "challenge": "datadome", "engine": "camoufox", "success": false, "timing_s": 30.0, "proxy_ip": null, "error": ""}
+{"ts": 1787214636.525936, "domain": "www.seloger.com", "challenge": "datadome", "engine": "camoufox", "success": false, "timing_s": 30.0, "proxy_ip": null, "error": ""}
