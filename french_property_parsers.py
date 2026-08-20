@@ -560,15 +560,34 @@ def parse_ufrn(html: str, source_url: str = "") -> list[dict]:
         # structured JSON missing → fall back to DOM parsing
         return parse_seloger(html, source_url)
 
-    classifieds = page_props.get("classifiedsData") or page_props.get("classifieds") or {}
-    # Normalise: classifiedsData is a dict keyed by card id; classifieds may be a list
+    # Normalise: classifieds is the REAL per-page search results list (30),
+    # suggestedClassifieds (4) repeat across pages. classifiedsData is the
+    # union keyed by id — use classifieds first, exclude suggested ids.
+    classifieds = page_props.get("classifieds") or []
+    suggested = page_props.get("suggestedClassifieds") or []
+    suggested_ids = set()
+    for s in suggested:
+        if isinstance(s, dict) and s.get("id"):
+            suggested_ids.add(s["id"])
+        elif isinstance(s, str):
+            suggested_ids.add(s)
     cards_dict = {}
-    if isinstance(classifieds, dict):
-        cards_dict = classifieds
-    elif isinstance(classifieds, list):
+    if isinstance(classifieds, list):
         for c in classifieds:
-            if isinstance(c, dict) and c.get("id"):
+            if isinstance(c, dict) and c.get("id") and c["id"] not in suggested_ids:
                 cards_dict[c["id"]] = c
+    elif isinstance(classifieds, dict):
+        cards_dict = {k: v for k, v in classifieds.items()
+                      if k not in suggested_ids}
+    if not cards_dict:
+        # fallback: classifiedsData (full union) minus suggested ids
+        cdata = page_props.get("classifiedsData") or {}
+        if isinstance(cdata, dict):
+            cards_dict = {k: v for k, v in cdata.items() if k not in suggested_ids}
+        elif isinstance(cdata, list):
+            for c in cdata:
+                if isinstance(c, dict) and c.get("id") and c["id"] not in suggested_ids:
+                    cards_dict[c["id"]] = c
 
     results = []
     seen = set()

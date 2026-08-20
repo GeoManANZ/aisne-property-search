@@ -232,10 +232,23 @@ class RotatingWebshareSession:
         return base64.b64encode(raw.encode()).decode()
 
     def get(self, url: str, headers: dict | None = None) -> ChainedResponse:
-        """GET url through the rotating proxy (CONNECT for https)."""
+        return self.request("GET", url, headers=headers)
+
+    def post(self, url: str, json: dict | None = None,
+             headers: dict | None = None) -> ChainedResponse:
+        return self.request("POST", url, json=json, headers=headers)
+
+    def request(self, method: str, url: str, json: dict | None = None,
+                headers: dict | None = None) -> ChainedResponse:
+        """HTTP(S) request through the rotating proxy (CONNECT for https)."""
         hdrs = dict(self.headers)
         if headers:
             hdrs.update(headers)
+        body = None
+        if json is not None:
+            body = __import__("json").dumps(json).encode()
+            hdrs.setdefault("Content-Type", "application/json")
+            hdrs.setdefault("Content-Length", str(len(body)))
         parsed = urllib.parse.urlparse(url)
         target_host = parsed.netloc
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -246,7 +259,7 @@ class RotatingWebshareSession:
             if parsed.scheme == "https":
                 connect_req = (f"CONNECT {target_host}:{port} HTTP/1.1\r\n"
                                f"Host: {target_host}:{port}\r\n"
-                               f"Proxy-Authorization: Basic {auth}\r\n"
+                               f"Proxy-Authorization: Basic ***"
                                f"\r\n")
                 s.sendall(connect_req.encode())
                 resp = s.recv(4096)
@@ -257,25 +270,31 @@ class RotatingWebshareSession:
                 path = parsed.path or "/"
                 if parsed.query:
                     path += "?" + parsed.query
-                head = (f"GET {path} HTTP/1.1\r\nHost: {target_host}\r\n"
+                head = (f"{method} {path} HTTP/1.1\r\nHost: {target_host}\r\n"
                         f"Connection: close\r\n")
                 for k, v in hdrs.items():
                     head += f"{k}: {v}\r\n"
                 head += "\r\n"
-                tls.sendall(head.encode())
-                status, hdrs2, body = self._read_headers(tls)
-                full = self._body(tls, hdrs2, body)
+                if body:
+                    tls.sendall(head.encode() + body)
+                else:
+                    tls.sendall(head.encode())
+                status, hdrs2, body0 = self._read_headers(tls)
+                full = self._body(tls, hdrs2, body0)
                 return ChainedResponse(status, full.decode(errors="replace"), hdrs2)
             else:
-                head = (f"GET {url} HTTP/1.1\r\nHost: {target_host}\r\n"
-                        f"Proxy-Authorization: Basic {auth}\r\n"
+                head = (f"{method} {url} HTTP/1.1\r\nHost: {target_host}\r\n"
+                        f"Proxy-Authorization: Basic ***"
                         f"Connection: close\r\n")
                 for k, v in hdrs.items():
                     head += f"{k}: {v}\r\n"
                 head += "\r\n"
-                s.sendall(head.encode())
-                status, hdrs2, body = self._read_headers(s)
-                full = self._body(s, hdrs2, body)
+                if body:
+                    s.sendall(head.encode() + body)
+                else:
+                    s.sendall(head.encode())
+                status, hdrs2, body0 = self._read_headers(s)
+                full = self._body(s, hdrs2, body0)
                 return ChainedResponse(status, full.decode(errors="replace"), hdrs2)
         finally:
             try:
