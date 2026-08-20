@@ -172,6 +172,13 @@ def solve_datadome(captcha_url: str, page_url: str, user_agent: str = "",
         "pageurl": page_url,
     }
     if user_agent:
+        # 2Captcha's DataDome method rejects unsupported UAs with
+        # ERROR_UNSUPPORTED_USERAGENT (e.g. Macintosh UAs).  Normalize to a
+        # supported Windows Chrome UA if the caller passed something else.
+        if "Windows NT 10.0" not in user_agent or "Chrome/" not in user_agent:
+            user_agent = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/124.0.0.0 Safari/537.36")
         params["userAgent"] = user_agent
     if proxy:
         params["proxy"] = proxy
