@@ -103,6 +103,24 @@ Resp: [full card objects with price, location, livingArea, energy, url...]
 - The browser earns the datadome cookie → then `page.evaluate(fetch(...))` rides it.
 - Companion endpoints: `serp-bff/search/effect`, `search-mfe-bff/v1/count`, `search-mfe-bff/places/data`.
 
+**classifiedList card schema (verified from raw response):**
+```
+{
+  brand, id, status, hasAIEnrichment,
+  metadata: {id, legacyId, creationDate, updateDate, ...},
+  location: {address: {country, city, zipCode}, isAddressPublished},
+  hardFacts: {title, price: {value, formatted, addition, ariaLabel}, facts: [{type, value, splitValue, label}]},
+  tracking: {price: 156800, city: "Laon", ...},   ← clean int price!
+  legacyTracking: {price, product_geolocation},
+  provider: {intermediaryCard, contactCard, address},
+  cardProvider: {title, subtitle},
+  mainDescription: {headline, description, metadata},
+  rawData: {price, providercity, surface: {main, plot}},
+  energyClass, type, url, portal, tags, display, cps, gallery
+}
+```
+**Field extraction (verified):** price → `tracking.price` (clean int) else `rawData.price` else `hardFacts.price.value`; surface → `rawData.surface.main` else `hardFacts.facts[]` (type contains space/surface/area); location → `location.address.city` + zipCode else `tracking.city`; DPE → `energyClass`.
+
 ### 4.2 Pagination button click
 **Error (hours):** `page.mouse.click(x, y)` at coordinates FAILS (overlay hit-testing) even after `scrollIntoView({block:'center'})`.
 **Fix:** **Playwright `locator.click()`** — does proper actionability checks (auto-scroll, hit-target, real mouse events). Verified: page advances instantly.

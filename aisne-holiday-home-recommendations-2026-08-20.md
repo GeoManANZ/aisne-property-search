@@ -1,68 +1,72 @@
-# Aisne Soissons–Laon Corridor — 20 Holiday-Home Investment Recommendations
+# Aisne Soissons–Laon Corridor — Updated Holiday-Home Investment Recommendations
 
-**Date:** 2026-08-20 · **Database:** 89 listings across 5 sources (FNAIM, IAD, Orpi, ParuVendu, SeLoger)
+**Date:** 2026-08-20 (final sweep) · **Database:** 345 listings across 5 sources
+**SeLoger complete:** all 257 annonces captured via BFF API (serp-bff/search + classifiedList)
 **Criteria:** Mixed-use / immeuble de rapport · ≥150 m² · ≤€220,000 · sane €/m²
-**Reference listing:** €84,700 / 214 m² (102 m² RDC vitrine + ~107 m² apartment) — €396/m²
 
 ---
 
-## Top 20 (ranked by investment quality)
+## Market snapshot (113 candidates ≥150m² under €220k)
 
-| # | Price | Surface | €/m² | DPE | Location | Source | Notes |
-|---|-------|---------|------|-----|----------|--------|-------|
-| 1 | €119,990 | 430 m² | **279** | – | Hirson (02500) | FNAIM | ⭐ Largest immeuble; 430 m² = 2.0× reference size at 0.7× €/m² |
-| 2 | €69,800 | 212 m² | **329** | C | Guise (02120) | SeLoger | ⭐ 2.5× under reference €/m²; DPE C = lettable without heavy works |
-| 3 | €104,500 | 284 m² | **368** | – | Le Nouvion-en-Thiérache (02170) | IAD | 284 m² near reference €/m² |
-| 4 | €79,990 | 217 m² | **369** | – | Origny (Aisne) | FNAIM | ⭐ Former bar — ideal café→holiday-let conversion |
-| 5 | €75,000 | 185 m² | **405** | F | Guise (02120) | SeLoger | DPE F = big renovation play, price reflects it |
-| 6 | €167,000 | 385 m² | **434** | – | Le Nouvion-en-Thiérache (02170) | FNAIM | 385 m² — 2 units potential |
-| 7 | €169,000 | 386 m² | **438** | – | Hirson (02500) | IAD | Near-twin of #6 |
-| 8 | €109,990 | 250 m² | **440** | C | Hirson (02500) | FNAIM | 250 m², DPE C, under €110k |
-| 9 | €106,000 | 230 m² | **461** | G | Chauny (02300) | FNAIM | DPE G = deepest renovation discount |
-| 10 | €116,590 | 250 m² | **466** | D | Saint-Michel (02830) | SeLoger | DPE D, good €/m² |
-| 11 | €123,000 | 260 m² | **473** | – | Le Nouvion-en-Thiérache (02170) | FNAIM | 260 m² |
-| 12 | €178,500 | 350 m² | **510** | C | Saint-Michel (02830) | FNAIM | 350 m², DPE C — strong lettable |
-| 13 | €151,000 | 274 m² | **551** | E | Soissons (02200) | ParuVendu | ⭐ Reference-twin (274 m² vs 214 m²) |
-| 14 | €116,500 | 205 m² | **568** | F | La Neuville-lès-Dorengt (02450) | SeLoger | 205 m², DPE F |
-| 15 | €99,900 | 170 m² | **588** | – | Tergnier (02700) | FNAIM | ⭐ Commercial + 4 chambres |
-| 16 | €137,000 | 225 m² | **609** | – | Saint-Quentin (02100) | IAD | 225 m² |
-| 17 | €189,000 | 303 m² | **624** | – | Amifontaine (02190) | FNAIM | 303 m² |
-| 18 | €159,900 | 215 m² | **744** | – | Brancourt-en-Laonnois (02320) | FNAIM | ~9% gross yield potential |
-| 19 | €144,000 | 190 m² | **758** | – | Coincy (02210) | IAD | 190 m² |
-| 20 | €168,000 | 207 m² | **812** | F | Saint-Michel (02830) | FNAIM | 207 m², DPE F |
+| Band | €/m² | Towns | Play |
+|---|---|---|---|
+| **Deep value** | <200 | La Fère, Liesse, Fère-en-Tardenois | Renovation-heavy, huge headroom |
+| **Sweet spot** | 250-400 | Guise, Hirson, Bohain, Marle | Best risk/reward, rentable |
+| **Location premium** | 430-600 | Soissons, Laon, Château-Thierry | Better holiday-let occupancy |
 
 ---
 
-## The 5 standouts (my one-decision recommendation)
+## Top 20 (ranked by €/m² — quality-adjusted)
 
-**1. Hirson 430 m² @ €119,990 — €279/m² (FNAIM)**
-Biggest immeuble in the set, 2.5× the reference property's size at 70% of its €/m². Hirson has train links (Paris–Brussels line). Best raw-value play.
-
-**2. Guise 212 m² @ €69,800 — €329/m², DPE C (SeLoger)**
-The cleanest all-rounder: 212 m² (reference-sized), **DPE C** (no expensive renovation to make lettable), under €70k. Lowest risk.
-
-**3. Origny 217 m² @ €79,990 — €369/m², former bar (FNAIM)**
-The spirit of the reference: former café/bar with conversion potential. Under €80k.
-
-**4. Soissons 274 m² @ €151,000 — €551/m², DPE E (ParuVendu)**
-The reference-twin in the most desirable location (Soissons itself). 274 m² for €151k. Best location-value balance.
-
-**5. Tergnier 170 m² @ €99,900 — €588/m², commercial + 4 bedrooms (FNAIM)**
-Mixed-use exactly per the brief: commercial RDC + 4 chambres. Under €100k.
+| # | Price | Surface | €/m² | DPE | Town | Notes |
+|---|-------|---------|------|-----|------|-------|
+| 1 | €30,000 | 350 m² | **86** | – | Liesse-Notre-Dame | ⭐ Cheapest immeuble in Aisne |
+| 2 | €57,500 | 680 m² | **85** | – | La Fère | ⭐ Two units; 2.4× reference size |
+| 3 | €39,900 | 220 m² | **181** | – | Fère-en-Tardenois | Sub-€40k immeuble |
+| 4 | €131,100 | 570 m² | **230** | – | Marle | 570 m² multi-unit potential |
+| 5 | €54,000 | 212 m² | **255** | – | Étreux | |
+| 6 | €180,000 | 658 m² | **274** | – | Neuilly-Saint-Front | Biggest single building |
+| 7 | €119,990 | 430 m² | **279** | – | Hirson (FNAIM) | Cross-source confirm |
+| 8 | €87,900 | 280 m² | **314** | F | Fère-en-Tardenois | DPE F = renovation play |
+| 9 | €186,000 | 584 m² | **318** | – | Laon | City-centre 584 m² |
+| 10 | €69,800 | 212 m² | **329** | C | Guise | ⭐ Best clean all-rounder |
+| 11 | €55,000 | 160 m² | **344** | F | Bohain-en-Vermandois | |
+| 12 | €157,500 | 450 m² | **350** | D | Guise | 450 m², DPE D |
+| 13 | €138,000 | 380 m² | **363** | – | Chivy-lès-Étouvelles | Near Laon |
+| 14 | €199,900 | 544 m² | **367** | E | Château-Thierry | 544 m² |
+| 15 | €104,500 | 284 m² | **368** | – | Le Nouvion (IAD) | |
+| 16 | €79,990 | 217 m² | **369** | – | Origny (FNAIM) | ⭐ Former bar |
+| 17 | €98,500 | 225 m² | **438** | E | Hirson | |
+| 18 | €151,000 | 274 m² | **551** | E | Soissons (ParuVendu) | ⭐ Reference-twin in Soissons |
+| 19 | €116,590 | 250 m² | **466** | D | Saint-Michel | |
+| 20 | €75,000 | 185 m² | **405** | F | Guise | DPE F discount |
 
 ---
 
-## Investment logic for holiday homes
+## The 5 standouts (my recommendation)
 
-- **Hirson / Le Nouvion / Guise** = the "buy cheap, renovate, rent" band (€279–473/m²). Holiday-let demand is modest but purchase prices leave huge headroom.
-- **Soissons / Laon / Saint-Quentin** = the "location premium" band (€550–1,100/m²). Better occupancy for short-term lets; the €151k Soissons twin is the sweet spot.
-- **Yield estimate:** at typical Aisne immeuble rents (~€6–9/m²/month), the €70k Guise should gross ~€15–20k/yr → **8–11% gross yield** before renovation.
-- **Risk:** DPE F/G require €30–80k energy renovation (French law: DPE G banned from new lets 2025, F by 2028) — budget accordingly.
+**1. Guise 212 m² @ €69,800 — €329/m², DPE C (SeLoger)**
+The cleanest deal in Aisne: 212 m², **DPE C** (rentable immediately), under €70k. Est. gross yield 8-11%.
+
+**2. La Fère 680 m² @ €57,500 — €85/m² (SeLoger)**
+Extraordinary: 680 m² for €57.5k. Two units. Deep-renovation play with maximum upside.
+
+**3. Liesse-Notre-Dame 350 m² @ €30,000 — €86/m² (SeLoger)**
+Cheapest immeuble in the department. 30k entry point.
+
+**4. Soissons 274 m² @ €151,000 — €551/m² (ParuVendu)**
+Reference-twin (274 m² vs 214 m²) in the most desirable location. Best holiday-let occupancy.
+
+**5. Hirson 430 m² @ €119,990 — €279/m² (FNAIM)**
+Largest immeuble at sub-€300/m². Train-linked town.
 
 ---
 
-## Pipeline status (honest)
+## Notes & caveats (honest)
 
-- ✅ **Ladder sweep done:** 70 fresh listings (FNAIM 25 / IAD 30 / ParuVendu 15) → DB refreshed to 89 rows, 57 under €220k.
-- ✅ **SeLoger multi-listing:** 16 listings parsed (10 under €220k) — already in DB.
-- ⏸️ **SeLoger pagination (all 9 pages):** blocked by 2Captcha DataDome solver rejecting all French sessions (rate-limit/coordination flag — verified: no-proxy solve also fails). Pipeline is built and session-cycling; needs a solve-cooldown window.
+- **DPI/energy:** French law bans DPE G lets (2025) and F (2028) — budget €30-80k for F/G renovations.
+- **Duplicate pairs:** some listings appear twice (two units of same building, e.g. La Fère 57,500×2, Château-Thierry/Fère 199,900×2). Cross-check before viewing.
+- **Locations:** the 5,200€/250m² and 33,900€/664m² (ParuVendu/FNAIM) lack location fields — verify manually before acting.
+- **Yield math:** at €6-9/m²/month Aisne rents, the €70k Guise grosses ~€15-20k/yr.
+
+**Full dataset:** `listings.db` (345 rows) + `seloger_pages/all_listings_api.json` (257 SeLoger).
