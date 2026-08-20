@@ -805,6 +805,28 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
                 "blocked": True}
 
     try:
+        domain = urllib.parse.urlparse(url).netloc
+        from cookie_store import get_cookies, save_cookies
+
+        # Step 0: reuse a saved datadome cookie for this (proxy, domain) pair —
+        # DataDome cookies are IP-bound and live ~6h.  Skipping the paid solve
+        # here is the highest-leverage cost win (the review's top recommendation).
+        saved = get_cookies(proxy.split(":")[0], domain)
+        saved_dd = None
+        for c in saved:
+            if c.get("name") == "datadome":
+                saved_dd = c.get("value")
+                break
+        if saved_dd:
+            s0 = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
+                                        headers={"User-Agent": user_agent,
+                                                 "Accept-Language": "fr-FR,fr;q=0.9",
+                                                 "Cookie": f"datadome={saved_dd}"})
+            r0 = s0.get(url)
+            if not is_cloudflare_block(r0.text, r0.status_code) and len(r0.text) > 3000:
+                return {"success": True, "rawHtml": r0.text, "status": r0.status_code,
+                        "error": None, "blocked": False, "reused_cookie": True}
+
         # Step 1: fetch through the chain → get the dd object
         s = ChainedWebshareSession(proxy_ip=proxy, timeout=timeout_s,
                                    headers={"User-Agent": user_agent,
@@ -843,11 +865,17 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
         # SeLoger serves the SPA with data even on 404 for search URLs
         has_data = len(r2.text) > 3000 and ("annonce" in r2.text.lower()
                                             or "prix" in r2.text.lower())
-        return {"success": (not blocked and has_data), "rawHtml": r2.text,
-                "status": r2.status_code,
-                "error": None if (not blocked and has_data)
+        success = (not blocked and has_data)
+        # Save the solved datadome cookie keyed by (proxy IP, domain) so the
+        # next run for this pair skips the paid solve.
+        if success:
+            save_cookies(proxy.split(":")[0], domain,
+                         [{"name": "datadome", "value": mm.group(1),
+                           "domain": "." + domain, "path": "/"}])
+        return {"success": success, "rawHtml": r2.text, "status": r2.status_code,
+                "error": None if success
                         else f"still blocked after datadome solve (status {r2.status_code})",
-                "blocked": blocked}
+                "blocked": blocked, "reused_cookie": False}
     except Exception as e:
         return {"success": False, "rawHtml": "", "status": 0,
                 "error": f"datadome engine error: {type(e).__name__}: {str(e)[:120]}",
