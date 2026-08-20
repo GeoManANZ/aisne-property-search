@@ -880,10 +880,16 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
     if user_agent is None:
         user_agent = _BROWSER_HEADERS["User-Agent"]
 
-    # Pick a proxy: explicit, or round-robin from the config list.
+    # Pick a proxy: explicit, or a healthy round-robin one from the config.
     if proxy is None:
-        import random
-        proxy = random.choice(WEBSHARE_PROXY_LIST) if WEBSHARE_PROXY_LIST else None
+        try:
+            from proxy_health import pick_healthy
+            proxy = pick_healthy()
+        except Exception:
+            proxy = None
+        if proxy is None:
+            import random
+            proxy = random.choice(WEBSHARE_PROXY_LIST) if WEBSHARE_PROXY_LIST else None
     if proxy is None:
         return ScrapeResult(success=False, status=0, engine="datadome",
                             error="no Webshare proxy available for DataDome solve",
