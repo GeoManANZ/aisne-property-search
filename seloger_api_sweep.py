@@ -36,44 +36,106 @@ CRITERIA = {
 
 
 def card_to_listing(c: dict) -> dict:
-    """Convert a classifiedList card → listing dict (same shape as parsers)."""
-    price = c.get("price")
-    if isinstance(price, dict):
-        price = price.get("value") or price.get("mainPrice")
-    surface = c.get("livingArea") or c.get("area")
-    if isinstance(surface, dict):
-        surface = surface.get("value")
+    """Convert a classifiedList card → listing dict (same shape as parsers).
+
+    Card schema (verified 2026-08-20 from classifiedList raw response):
+      location.address.city / zipCode
+      hardFacts.title, hardFacts.price.value (dict), hardFacts.facts (list)
+      tracking.price (clean int), tracking.city
+      rawData.surface.main / plot, rawData.price, rawData.providercity
+      mainDescription.description, energyClass, url, provider/cardProvider
+    """
+    # --- price: prefer tracking.price (clean int), fall back to hardFacts ---
+    price = c.get("tracking", {}).get("price") if isinstance(c.get("tracking"), dict) else None
+    if price is None:
+        try:
+            price = c.get("rawData", {}).get("price")
+        except Exception:
+            price = None
+    if price is None:
+        hf = c.get("hardFacts") or {}
+        if isinstance(hf, dict):
+            p = hf.get("price")
+            if isinstance(p, dict):
+                price = p.get("value") or p.get("ariaLabel") or p.get("formatted")
+            else:
+                price = p
     if isinstance(price, str):
         pm = re.search(r"[\d\s]{4,}", price)
         price = _clean_seloger_price(pm.group(0)) if pm else None
+
+    # --- surface: rawData.surface.main / plot, else hardFacts.facts ---
+    surface = None
+    rd = c.get("rawData") or {}
+    if isinstance(rd, dict):
+        surf = rd.get("surface")
+        if isinstance(surf, dict):
+            surface = surf.get("main") or surf.get("plot")
+    if surface is None:
+        hf = c.get("hardFacts") or {}
+        if isinstance(hf, dict):
+            for f in hf.get("facts") or []:
+                if isinstance(f, dict):
+                    ftype = str(f.get("type") or "").lower()
+                    if any(x in ftype for x in ("space", "surface", "area", "size", "living")):
+                        surface = f.get("splitValue") or f.get("value")
+                        break
     if isinstance(surface, str):
         sm = re.search(r"(\d+)", surface)
         surface = int(sm.group(1)) if sm else None
     if surface is not None and surface < 10:
         surface = None
-    location = c.get("location") or {}
-    if isinstance(location, dict):
-        location = (location.get("label") or location.get("city")
-                    or location.get("name") or "")
-    dpe = c.get("energyClass") or c.get("energy")
+
+    # --- location ---
+    location = None
+    loc = c.get("location") or {}
+    if isinstance(loc, dict):
+        addr = loc.get("address") or {}
+        if isinstance(addr, dict):
+            parts = [addr.get("city"), addr.get("zipCode")]
+            location = " ".join(str(x) for x in parts if x)
+    if not location:
+        tc = c.get("tracking") or {}
+        if isinstance(tc, dict) and tc.get("city"):
+            location = tc["city"]
+    if not location:
+        rd = c.get("rawData") or {}
+        if isinstance(rd, dict) and rd.get("providercity"):
+            location = rd["providercity"]
+
+    # --- DPE ---
+    dpe = c.get("energyClass")
     if isinstance(dpe, dict):
         dpe = dpe.get("value")
     if dpe and isinstance(dpe, str):
         dm = re.search(r"\b([A-G])\b", dpe)
         dpe = dm.group(1).upper() if dm else None
-    url = c.get("url") or c.get("seoUrl") or ""
+
+    # --- url ---
+    url = c.get("url") or ""
     if isinstance(url, dict):
         url = url.get("seoUrl") or url.get("href") or ""
     if url and not url.startswith("http"):
         url = "https://www.seloger.com" + url
-    title = c.get("mainDescription") or c.get("description") or ""
-    if isinstance(title, dict):
-        title = title.get("text") or title.get("title") or ""
+
+    # --- title / description ---
+    title = ""
+    md = c.get("mainDescription") or {}
+    if isinstance(md, dict):
+        title = md.get("description") or md.get("headline") or ""
+    elif isinstance(md, str):
+        title = md
+    hf = c.get("hardFacts") or {}
+    if not title and isinstance(hf, dict):
+        title = hf.get("title") or ""
     title = str(title).strip()[:250]
+
+    # --- agency ---
     agency = None
-    prov = c.get("provider") or c.get("cardProvider") or {}
+    prov = c.get("cardProvider") or c.get("provider") or {}
     if isinstance(prov, dict):
         agency = prov.get("title") or prov.get("name")
+
     return {
         "source": "seloger",
         "url": url,
@@ -173,12 +235,15 @@ def main():
                                         headers: {'Accept': 'application/json'}
                                     });
                                     if (!r.ok) return null;
-                                    return await r.json();
+                                    const txt = await r.text();
+                                    try { return JSON.parse(txt); }
+                                    catch (e) { return null; }
                                 }""", batch)
                         except Exception as e:
                             print(f"  batch err: {type(e).__name__}", flush=True)
                             continue
                         if not cards:
+                            print(f"  batch null — skipping", flush=True)
                             continue
                         for c in cards:
                             if not isinstance(c, dict):
