@@ -726,7 +726,18 @@ def _parse_datadome_dd(body: str) -> dict:
 
     The dd object carries the challenge fields (cid, hsh, t, s, e, host)
     needed to build the geo.captcha-delivery.com solve URL.
+
+    Parsing is layered (robust to the single-quote / nested-string quirks
+    DataDome serves):
+      1. ast.literal_eval — handles single-quoted JSON with nested quotes safely
+      2. json.loads after swapping single→double quotes (only if no inner
+         apostrophes that would break it)
+      3. key:value regex fallback for the fields we actually need
     """
+    import ast
+    import json
+    import re
+
     start = body.find("var dd=")
     if start == -1:
         return {}
@@ -738,13 +749,25 @@ def _parse_datadome_dd(body: str) -> dict:
         elif body[j] == "}":
             depth -= 1
             if depth == 0:
-                raw = body[i:j + 1].replace("'", '"')
+                raw = body[i:j + 1]
+                # 1) ast.literal_eval — Python-style single-quote literals
                 try:
-                    import json
-                    return json.loads(raw)
+                    val = ast.literal_eval(raw)
+                    if isinstance(val, dict):
+                        return val
                 except Exception:
-                    import re
-                    return dict(re.findall(r'"(\w+)":"([^"]*)"', raw))
+                    pass
+                # 2) json after single→double quote swap (safe if no apostrophes)
+                if "'" in raw and '"' not in raw:
+                    try:
+                        return json.loads(raw.replace("'", '"'))
+                    except Exception:
+                        pass
+                # 3) regex fallback — pull exactly the fields we need
+                fields = dict(re.findall(r"[\"'](\w+)[\"']\s*:\s*[\"']([^\"']*)[\"']", raw))
+                # keep only non-empty, known keys
+                return {k: v for k, v in fields.items()
+                        if k in ("cid", "hsh", "t", "s", "e", "host", "rt", "qp") and v}
     return {}
 
 
@@ -841,6 +864,10 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
             return {"success": False, "rawHtml": r.text, "status": r.status_code,
                     "error": "no DataDome dd object found", "blocked": True}
         captcha_url = _build_datadome_challenge_url(dd, url)
+        import sys
+        print(f"  [datadome] dd={ {k: dd.get(k) for k in ('cid','hsh','t','s','e','host','rt')} }",
+              file=sys.stderr)
+        print(f"  [datadome] captcha_url={captcha_url[:120]}...", file=sys.stderr)
 
         # Step 2: solve via 2Captcha with matching proxy + UA
         proxy_str = f"{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}"
