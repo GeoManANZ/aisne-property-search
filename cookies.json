@@ -1,1 +1,13 @@
-{}
+{
+  "31.59.20.176|www.seloger.com": {
+    "saved_at": 1787215917.553658,
+    "cookies": [
+      {
+        "name": "datadome",
+        "value": "tgUPnGBOs8B_JlTI9tXTzKKHoBWrLjRzq~9AuOp~acp0ZMzl62xtLpBv84JLcM4uvZXSOEB9caOn1g1cmiUCxARkXOOKJE_hdulEj12pqRV2xgRaI4m0agtoXRWcyHcc",
+        "domain": ".www.seloger.com",
+        "path": "/"
+      }
+    ]
+  }
+}

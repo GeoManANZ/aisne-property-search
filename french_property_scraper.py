@@ -1127,7 +1127,23 @@ def route_engines(challenge_type: str, full_cascade: list[str],
     challenge) pair, order engines by success rate (best first).  Otherwise
     use the static routing table (most-likely-to-succeed engines first) and
     finally fall back to the provided full cascade.
+
+    Domain hints (review item 9): SeLoger / Logic-Immo are JS SPAs — the free
+    Camoufox render cracks them (verified 2026-08-20, 1.15MB real listings)
+    without spending on a 2Captcha DataDome solve.  Prefer it.
     """
+    _SPA_DOMAINS = {"www.seloger.com", "www.logic-immo.com"}
+    if domain in _SPA_DOMAINS and challenge_type in ("hard403", "datadome"):
+        ordered = ["camoufox", "datadome", "webshare-stealth", "stealth"]
+        try:
+            from engine_metrics import best_engine_for
+            hist = best_engine_for(domain, challenge_type)
+            if hist and hist != _DEFAULT_ORDER.get(challenge_type, []):
+                # historical data beats the hint once it exists
+                return hist
+        except Exception:
+            pass
+        return ordered
     if challenge_type in _CHALLENGE_ROUTING and _CHALLENGE_ROUTING[challenge_type]:
         if domain:
             try:
