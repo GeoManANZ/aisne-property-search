@@ -121,6 +121,32 @@ class ScrapeResult:
 
 
 # ---------------------------------------------------------------------------
+# Structured logging helper (review item 12)
+# ---------------------------------------------------------------------------
+import logging as _logging
+
+_log = _logging.getLogger("aisne.scraper")
+if not _log.handlers:
+    _h = _logging.StreamHandler()
+    _h.setFormatter(_logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    _log.addHandler(_h)
+    _log.setLevel(_logging.INFO)
+
+
+def log_info(msg: str):
+    _log.info(msg)
+
+
+def log_error(msg: str):
+    _log.error(msg)
+
+
+def log_debug(msg: str):
+    _log.debug(msg)
+
+
+# ---------------------------------------------------------------------------
 # CONFIG — single source of truth in config.py
 # ---------------------------------------------------------------------------
 from config import (
@@ -936,10 +962,8 @@ def scrape_via_datadome(url, timeout_s=60, user_agent=None, proxy=None):
                                 error="no DataDome dd object found",
                                 proxy_ip=proxy.split(":")[0])
         captcha_url = _build_datadome_challenge_url(dd, url)
-        import sys
-        print(f"  [datadome] dd={ {k: dd.get(k) for k in ('cid','hsh','t','s','e','host','rt')} }",
-              file=sys.stderr)
-        print(f"  [datadome] captcha_url={captcha_url[:120]}...", file=sys.stderr)
+        log_debug(f"datadome dd={ {k: dd.get(k) for k in ('cid','hsh','t','s','e','host','rt')} }")
+        log_info(f"datadome captcha_url={captcha_url[:120]}...")
 
         # Step 2: solve via 2Captcha with matching proxy + UA
         proxy_str = f"{WEBSHARE_PROXY_USER}:{WEBSHARE_PROXY_PASS}@{proxy}"
@@ -1780,6 +1804,14 @@ if __name__ == "__main__":
         print(f"\nDiagnostics:")
         for line in result["diagnostics"]:
             print(f"  {line}")
+        try:
+            from engine_metrics import summary as _m_summary
+            ms = _m_summary(urllib.parse.urlparse(result["url"]).netloc)
+            if ms and not ms.startswith("(no"):
+                print(f"\nEngine metrics (domain):")
+                print(ms)
+        except Exception:
+            pass
 
     else:
         # Quick demo: scan the 3 hardest-hit portals from the earlier research
