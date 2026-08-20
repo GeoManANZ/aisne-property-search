@@ -68,7 +68,9 @@ class ListingsDB:
                 agency       TEXT,
                 description  TEXT,
                 first_seen   TEXT,
-                last_seen    TEXT
+                last_seen    TEXT,
+                last_check   TEXT,
+                status       TEXT DEFAULT 'active'
             )
             """
         )
@@ -87,29 +89,42 @@ class ListingsDB:
         c.execute("CREATE INDEX IF NOT EXISTS idx_listings_price ON listings(price_eur)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_listings_surface ON listings(surface_m2)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_pricehist_url ON price_history(url)")
+        # Backfill new columns on existing databases (ALTER IF NOT EXISTS isn't
+        # standard SQLite, so check pragma first) — BEFORE creating indexes
+        # that reference the new columns.
+        cols = [r[1] for r in c.execute("PRAGMA table_info(listings)")]
+        if "last_check" not in cols:
+            c.execute("ALTER TABLE listings ADD COLUMN last_check TEXT")
+        if "status" not in cols:
+            c.execute("ALTER TABLE listings ADD COLUMN status TEXT DEFAULT 'active'")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status)")
         c.commit()
 
     def upsert_listing(self, *, url: str, source=None, title=None, price_eur=None,
                        surface_m2=None, dpe_energy=None, location=None,
-                       agency=None, description=None, now: str | None = None):
+                       agency=None, description=None, status="active",
+                       now: str | None = None):
         """Insert a new listing or update an existing one (keyed by URL).
 
-        Tracks first_seen vs last_seen, and appends to price_history whenever
-        the price differs from the last known value for that URL.
+        Tracks first_seen vs last_seen, sets last_check on every upsert, and
+        appends to price_history whenever the price differs from the last
+        known value for that URL.  `status` is 'active' by default; callers
+        can pass 'gone' or 'sold' when a detail fetch shows the ad is dead.
         """
         now = now or datetime.now(timezone.utc).isoformat()
         cur = self.conn.execute(
-            "SELECT price_eur, first_seen FROM listings WHERE url = ?", (url,)
+            "SELECT price_eur, first_seen, status FROM listings WHERE url = ?", (url,)
         )
         row = cur.fetchone()
         first_seen = row[1] if row else now
+        prev_status = row[2] if row else None
 
         self.conn.execute(
             """
             INSERT INTO listings (url, source, title, price_eur, surface_m2,
                                   dpe_energy, location, agency, description,
-                                  first_seen, last_seen)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                                  first_seen, last_seen, last_check, status)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(url) DO UPDATE SET
                 source      = COALESCE(excluded.source, listings.source),
                 title       = COALESCE(excluded.title, listings.title),
@@ -119,11 +134,16 @@ class ListingsDB:
                 location    = COALESCE(excluded.location, listings.location),
                 agency      = COALESCE(excluded.agency, listings.agency),
                 description = COALESCE(excluded.description, listings.description),
-                last_seen   = excluded.last_seen
+                last_seen   = excluded.last_seen,
+                last_check  = excluded.last_check,
+                status      = excluded.status
             """,
             (url, source, title, price_eur, surface_m2, dpe_energy,
-             location, agency, description, first_seen, now),
+             location, agency, description, first_seen, now, now, status),
         )
+
+        # Status transition → also log to price_history when a listing goes
+        # gone/sold? No — that table is price-only.  Keep it simple.
 
         # Price-change logging.  Log the initial price on first insert too,
         # so price_drops() can compare against a real prior value.
@@ -167,25 +187,42 @@ class ListingsDB:
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
     def price_drops(self, days: int = 30) -> list[dict]:
-        """Listings whose price changed downward recently (deal alerts)."""
-        cutoff = (datetime.now(timezone.utc).isoformat())  # rough; good enough
+        """Listings whose price changed downward within the last `days` days.
+
+        Only considers price_history entries within the window, so a drop
+        from 3 months ago doesn't keep alerting forever.  Returns the most
+        recent drop per URL.
+        """
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         cur = self.conn.execute(
             """
-            SELECT ph.url, l.title, l.source, ph.price_eur AS new_price,
+            SELECT ph.url, l.title, l.source, l.status,
+                   ph.price_eur AS new_price,
                    (SELECT price_eur FROM price_history ph2
                     WHERE ph2.url = ph.url AND ph2.id < ph.id
                     ORDER BY ph2.id DESC LIMIT 1) AS old_price,
                    ph.seen_at
             FROM price_history ph JOIN listings l ON l.url = ph.url
-            WHERE ph.price_eur < COALESCE(
-                (SELECT price_eur FROM price_history ph2
-                 WHERE ph2.url = ph.url AND ph2.id < ph.id
-                 ORDER BY ph2.id DESC LIMIT 1), 999999999)
+            WHERE ph.seen_at >= ?
+              AND ph.price_eur < (
+                    SELECT price_eur FROM price_history ph2
+                    WHERE ph2.url = ph.url AND ph2.id < ph.id
+                    ORDER BY ph2.id DESC LIMIT 1)
             ORDER BY ph.seen_at DESC
-            """
+            """,
+            (cutoff,),
         )
         cols = [d[0] for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        # dedupe per URL (keep the latest drop)
+        seen: set[str] = set()
+        out = []
+        for r in rows:
+            if r["url"] not in seen:
+                seen.add(r["url"])
+                out.append(r)
+        return out
 
     def count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0]
