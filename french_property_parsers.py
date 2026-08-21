@@ -114,6 +114,13 @@ def parse_fnaim(html: str, source_url: str) -> list[dict]:
             except ValueError:
                 pass
 
+        # Location: data-title often has "TOWN NNNNN" at the end
+        # e.g. "Immeuble  94m² HIRSON 02500" → "HIRSON 02500"
+        location = None
+        lm = re.search(r"([A-ZÀ-Ý][\wÀ-ÿ'\- ]+?)\s+(\d{5})\s*$", title)
+        if lm:
+            location = f"{lm.group(1).strip()} ({lm.group(2)})"
+
         # Full URL
         full_url = f"https://www.fnaim.fr{href}" if href.startswith("/") else href
 
@@ -124,6 +131,7 @@ def parse_fnaim(html: str, source_url: str) -> list[dict]:
             "price_eur": price,
             "surface_m2": surface,
             "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
+            "location": location,
             "raw_title": title,
             "parsed_at": datetime.now(timezone.utc).isoformat(),
             "source_page": source_url,
@@ -203,64 +211,159 @@ def parse_iad(html: str, source_url: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# PARUVENDU PARSER
+# PARUVENDU PARSER (card-level)
 # ---------------------------------------------------------------------------
-# ParuVendu listing pages:
-#   https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/
-#   Each listing card: <a class="listercom" href="/immobilier/vente/immeuble/NUMBER...">
-#   Price and surface in card body via data attributes or visible text
+# ParuVendu search results are structured as <div class="blocAnnonce"> cards.
+# Each card contains: an <a href="/immobilier/vente/immeuble/BASE36ID"> link,
+# plus sibling elements holding price ("450 000 &euro;"), title ("Immeuble"),
+# location ("Soissons (02)"), DPE ("D"), energy, and a real description.
+# Parsing at the CARD level (not the link level) avoids the JS-fragment junk
+# inside the <a> and captures location/description that link-level parsing
+# missed entirely.
 
-PV_LINK_RE = re.compile(
-    r'<a[^>]*href="(/immobilier/vente/immeuble/[^"]+)"[^>]*>(.*?)</a>',
-    re.DOTALL | re.IGNORECASE
+PV_CARD_RE = re.compile(
+    r'<div[^>]*class="[^"]*blocAnnonce[^"]*"[^>]*data-id="([^"]+)"[^>]*>(.*?)(?=<div[^>]*class="[^"]*blocAnnonce|</div>\s*</div>\s*</div>\s*</div>|id="bloc_loader")',
+    re.DOTALL | re.IGNORECASE,
 )
-PV_PRICE_RE = re.compile(r"(\d{1,3}(?:\.\d{3})*(?:,\d{2})?)\s*€", re.IGNORECASE)
+PV_DETAIL_HREF_RE = re.compile(r'href="(/immobilier/vente/immeuble/[A-Z0-9]+)"', re.IGNORECASE)
+
+
+def _pv_is_detail_url(url: str) -> bool:
+    """True only if the URL points to an individual property (has a base36 ID)."""
+    return bool(re.search(r"/immeuble/([A-Z0-9]{17,22})$", url))
+PV_PRICE_RE = re.compile(r"([\d\s]{4,})\s*&euro;|([\d\s]{4,})\s*€", re.IGNORECASE)
 PV_SURFACE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*m²", re.IGNORECASE)
-PV_LOCATION_RE = re.compile(r"<span[^>]*class=\"[^\"]*adresse[^\"]*\"[^>]*>(.*?)</span>", re.DOTALL | re.IGNORECASE)
+# location appears as "Soissons (02)" — a proper town name followed by (NN) or NNNNN.
+# Anchored: NOT preceded by "Immeuble" (which would grab the surface line).
+PV_LOCATION_RE = re.compile(
+    r"(?<!Immeuble\s)([A-ZÀ-Ý][\wÀ-ÿ'\- ]{2,}?)\s*\(?\s*(\d{2,5})\s*\)?",
+    re.IGNORECASE,
+)
+PV_DPE_RE = re.compile(r"DPE\s*:\s*([A-G])", re.IGNORECASE)
+PV_ENERGY_RE = re.compile(r"(\d{3})\s*kWh/m²\.an", re.IGNORECASE)
+
+
+def _pv_card_text(card_html: str) -> str:
+    """Visible text of a card (scripts stripped), collapsed to single spaces."""
+    seg = re.sub(r"<script.*?</script>", " ", card_html, flags=re.DOTALL)
+    seg = re.sub(r"<[^>]+>", " ", seg)
+    seg = re.sub(r"\s+", " ", seg)
+    return seg.strip()
 
 
 def parse_paruvendu(html: str, source_url: str) -> list[dict]:
     """
     Parse ParuVendu listing page → list of property dicts.
+    Uses lxml to split blocAnnonce cards and extract from real elements:
+      - url: detail link
+      - price: div.encoded-lnk (font-medium) containing '450 000 €'
+      - title: detail link title attr ('Immeuble')
+      - location: <a> with 'L'ADRESSE' text, or 'Town (NN)' in card text
+      - DPE: span.NoteEnerg_X
+      - description: p.text-justify (line-clamp-5)
+      - surface: 'NNN m²' from card text
+    Only individual property detail URLs are kept (base36-ID pattern).
     """
+    try:
+        from lxml import html as lhtml
+    except ImportError:
+        return []
     results = []
     seen = set()
+    try:
+        doc = lhtml.fromstring(html)
+    except Exception:
+        return []
 
-    for href, inner_html in PV_LINK_RE.findall(html):
-        full_url = f"https://www.paruvendu.fr{href}" if href.startswith("/") else href
+    for card in doc.cssselect("div.blocAnnonce"):
+        # detail link
+        a = card.cssselect('a[href*="/immobilier/vente/immeuble/"]')
+        if not a:
+            continue
+        href = a[0].get("href") or ""
+        full_url = "https://www.paruvendu.fr" + href if href.startswith("/") else href
+        if not _pv_is_detail_url(full_url):
+            continue
         if full_url in seen:
             continue
         seen.add(full_url)
 
-        # Clean inner text
-        text = re.sub(r"<[^>]+>", " ", inner_html)
-        text = re.sub(r"\s+", " ", text).strip()
+        title = (a[0].get("title") or "").strip()[:200]
 
+        # price
         price = None
-        pm = PV_PRICE_RE.search(text)
-        if pm:
-            try:
-                price = int(pm.group(1).replace(".", "").replace(",", ""))
-            except ValueError:
-                pass
+        price_el = card.cssselect("div.encoded-lnk")
+        if price_el:
+            ptxt = price_el[0].text_content()
+            pm = re.search(r"([\d\s.]+)\s*€", ptxt)
+            if pm:
+                try:
+                    price = int(pm.group(1).replace(" ", "").replace(".", "").replace(",", ""))
+                except ValueError:
+                    price = None
+        if price is not None and price < 5000:
+            price = None
 
+        # full card text (collapsed)
+        raw = lhtml.tostring(card, encoding="unicode")
+        text = re.sub(r"<script.*?</script>", " ", raw, flags=re.DOTALL)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text)
+
+        # surface: 'NNN m²' with plausible building size
         surface = None
-        sm = PV_SURFACE_RE.search(text)
-        if sm:
-            try:
-                surface = float(sm.group(1))
-                surface = int(surface)
-            except ValueError:
-                pass
+        for sm in re.finditer(r"(\d+(?:\.\d+)?)\s*m²", text):
+            v = int(float(sm.group(1)))
+            if 20 <= v <= 5000:
+                surface = v
+                break
+
+        # location: 'L'ADRESSE <TOWN>' or 'Town (NN)'
+        location = None
+        addr_el = card.cssselect("a[class*=line-clamp-1]")
+        for ae in addr_el:
+            t = ae.text_content().strip()
+            if "adresse" in t.lower():
+                loc = re.sub(r"^L'ADRESSE\s*", "", t, flags=re.IGNORECASE).strip()
+                if loc:
+                    location = loc[:120]
+                    break
+        if not location:
+            lm = re.search(r"([A-ZÀ-Ý][\wÀ-ÿ'\-]{2,})\s*\((\d{2,5})\)", text)
+            if lm:
+                location = f"{lm.group(1).strip()} ({lm.group(2)})"
+
+        # DPE: span with class NoteEnerg_X
+        dpe = None
+        for el in card.cssselect("[class*=NoteEnerg]"):
+            t = el.get("class") or ""
+            m = re.search(r"NoteEnerg_([A-G])", t)
+            if m:
+                dpe = m.group(1).upper()
+                break
+        if not dpe:
+            dm = re.search(r"DPE\s*:\s*([A-G])", text)
+            if dm:
+                dpe = dm.group(1).upper()
+
+        # description: p.text-justify
+        description = ""
+        p_el = card.cssselect("p.text-justify, p[class*=line-clamp-5]")
+        if p_el:
+            description = p_el[0].text_content().strip()
 
         results.append({
             "source": "paruvendu",
             "url": full_url,
-            "title": text[:200],
+            "title": title,
             "price_eur": price,
             "surface_m2": surface,
             "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
-            "raw_text": text,
+            "location": location,
+            "dpe_energy": dpe,
+            "description": description,
+            "ref": None,
+            "raw_text": text[:500],
             "parsed_at": datetime.now(timezone.utc).isoformat(),
             "source_page": source_url,
         })

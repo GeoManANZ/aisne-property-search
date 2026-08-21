@@ -111,24 +111,39 @@ def card_to_listing(c: dict) -> dict:
         dm = re.search(r"\b([A-G])\b", dpe)
         dpe = dm.group(1).upper() if dm else None
 
-    # --- url ---
-    url = c.get("url") or ""
-    if isinstance(url, dict):
-        url = url.get("seoUrl") or url.get("href") or ""
-    if url and not url.startswith("http"):
-        url = "https://www.seloger.com" + url
+    # --- url: canonical = https://www.seloger.com/<legacyId>/detail.htm ---
+    # Always prefer the legacyId form (clean, resolves correctly).  The raw
+    # `url` field is sometimes /wl-cdp/ (promoted CDP) or a category-style
+    # path that redirects to the wrong property.
+    legacy_id = c.get("metadata", {}).get("legacyId") if isinstance(c.get("metadata"), dict) else None
+    if legacy_id:
+        url = f"https://www.seloger.com/{legacy_id}/detail.htm"
+    else:
+        url = c.get("url") or ""
+        if isinstance(url, dict):
+            url = url.get("seoUrl") or url.get("href") or ""
+        if url and not url.startswith("http"):
+            url = "https://www.seloger.com" + url
+        # strip promoted walled-CDP links → canonical detail if an id is present
+        m = re.search(r"/(\d{6,12})/(?:detail\.htm)?$", url)
+        if m:
+            url = f"https://www.seloger.com/{m.group(1)}/detail.htm"
 
-    # --- title / description ---
+    # --- title (short) / description (long) ---
     title = ""
+    hf = c.get("hardFacts") or {}
+    if isinstance(hf, dict):
+        title = hf.get("title") or ""
+    description = ""
     md = c.get("mainDescription") or {}
     if isinstance(md, dict):
-        title = md.get("description") or md.get("headline") or ""
+        description = md.get("description") or md.get("headline") or ""
+        if not title:
+            title = md.get("headline") or ""
     elif isinstance(md, str):
-        title = md
-    hf = c.get("hardFacts") or {}
-    if not title and isinstance(hf, dict):
-        title = hf.get("title") or ""
+        description = md
     title = str(title).strip()[:250]
+    description = str(description).strip()
 
     # --- agency ---
     agency = None
@@ -146,6 +161,7 @@ def card_to_listing(c: dict) -> dict:
         "dpe_energy": dpe,
         "location": location,
         "agency": agency,
+        "description": description,
         "ref": c.get("id"),
         "raw_title": title,
         "parsed_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
