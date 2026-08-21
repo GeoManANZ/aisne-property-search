@@ -1,0 +1,47 @@
+# Daily sweep + price-alert schedule for the Aisne property-search pipeline.
+#
+# Two options: cron (simple) or systemd timer (better logging/restart).
+
+# ---------------------------------------------------------------------------
+# OPTION A — cron (crontab -e)
+# ---------------------------------------------------------------------------
+# SeLoger BFF sweep every morning at 07:30 UTC, ladder at 08:30, price alert
+# at 09:00 (matches the Hermes cron "Aisne Price Drop Alert" job).  Redirect
+# output to a log; cron mails failures if MAILTO is set.
+#
+# MAILTO=you@example.com
+# 30 7 * * *  cd /workspace/hermes1/projects/aisne-property-search && .venv/bin/python seloger_api_sweep.py --max-pages 9 --sessions 8 >> logs/sweep.log 2>&1
+# 30 8 * * *  cd /workspace/hermes1/projects/aisne-property-search && .venv/bin/python french_property_parsers.py ladder --sources fnaim iad paruvendu --max 200 --delay 1 >> logs/ladder.log 2>&1
+# 0  9 * * *  cd /workspace/hermes1/projects/aisne-property-search && .venv/bin/python price_alert.py --min-pct 5 --out logs/price-alert.json >> logs/alert.log 2>&1
+
+# ---------------------------------------------------------------------------
+# OPTION B — systemd timer (drop-in: /etc/systemd/system/aisne-sweep.{service,timer})
+# ---------------------------------------------------------------------------
+# /etc/systemd/system/aisne-sweep.service
+# [Unit]
+# Description=Aisne property sweep (SeLoger BFF + ladder + price alert)
+# After=network-online.target
+# Wants=network-online.target
+#
+# [Service]
+# Type=oneshot
+# WorkingDirectory=/workspace/hermes1/projects/aisne-property-search
+# ExecStartPre=/bin/mkdir -p logs
+# ExecStart=.venv/bin/python seloger_api_sweep.py --max-pages 9 --sessions 8
+# ExecStart=.venv/bin/python french_property_parsers.py ladder --sources fnaim iad paruvendu --max 200 --delay 1
+# ExecStart=.venv/bin/python price_alert.py --min-pct 5
+# StandardOutput=append:/workspace/hermes1/projects/aisne-property-search/logs/sweep.log
+# StandardError=append:/workspace/hermes1/projects/aisne-property-search/logs/sweep.err.log
+#
+# /etc/systemd/system/aisne-sweep.timer
+# [Unit]
+# Description=Run Aisne sweep daily at 07:30 UTC
+#
+# [Timer]
+# OnCalendar=*-*-* 07:30:00
+# Persistent=true
+#
+# [Install]
+# WantedBy=timers.target
+#
+# Enable:  sudo systemctl enable --now aisne-sweep.timer

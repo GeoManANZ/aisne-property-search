@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import config
+
 # ---------------------------------------------------------------------------
 # HTML fetching helpers
 # ---------------------------------------------------------------------------
@@ -532,7 +534,7 @@ SOURCE_URLS = {
     "paruvendu": "https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/",
 }
 
-OUTPUT_DIR = Path("/workspace/hermes1/projects/aisne-property-search/scans")
+OUTPUT_DIR = Path(config.PROJECT_ROOT) / "scans"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

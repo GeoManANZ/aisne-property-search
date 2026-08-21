@@ -53,23 +53,14 @@ TWOCAPTCHA_API_KEY = os.environ.get("TWOCAPTCHA_API_KEY", "").strip()
 WEBSHARE_PROXY_USER = os.environ.get("WEBSHARE_USERNAME", "").strip()
 WEBSHARE_PROXY_PASS = os.environ.get("WEBSHARE_PASSWORD", "").strip()
 
-# If env didn't provide them, fall back to the ones in proxy_config.py
-# (which itself should be considered sensitive).  Keep this ONLY as a last
-# resort — prefer setting WEBSHARE_USERNAME/PASSWORD in .env.
+# Fail loudly if credentials are missing — the nz-mortgage-saas proxy_config
+# fallback was removed (it broke outside the Hermes1 layout).  Set
+# WEBSHARE_USERNAME / WEBSHARE_PASSWORD in .env.
 if not WEBSHARE_PROXY_USER or not WEBSHARE_PROXY_PASS:
-    try:
-        import sys
-        sys.path.insert(0, str(Path("/workspace/hermes1/projects/nz-mortgage-saas/scrapers")))
-        from proxy_config import (  # type: ignore
-            WEBSHARE_PROXY_USER as _WS_USER,
-            WEBSHARE_PROXY_PASS as _WS_PASS,
-            WEBSHARE_PROXY_LIST as _WS_LIST,
-        )
-        WEBSHARE_PROXY_USER = WEBSHARE_PROXY_USER or _WS_USER
-        WEBSHARE_PROXY_PASS = WEBSHARE_PROXY_PASS or _WS_PASS
-        _WS_PROXY_LIST_FALLBACK = _WS_LIST
-    except Exception:
-        _WS_PROXY_LIST_FALLBACK = []
+    raise RuntimeError(
+        "Missing Webshare credentials: set WEBSHARE_USERNAME and "
+        "WEBSHARE_PASSWORD in the project .env (see .env.example)."
+    )
 
 # Webshare static per-IP proxy list ("ip:port").  Refresh from the Webshare
 # dashboard download URL when it rotates.
@@ -85,8 +76,10 @@ WEBSHARE_PROXY_LIST = [
     "142.111.67.146:5611",  # JP Tokyo
     "191.96.254.138:6185",  # US LA
 ]
-if not WEBSHARE_PROXY_LIST:
-    WEBSHARE_PROXY_LIST = list(_WS_PROXY_LIST_FALLBACK)
+
+# French sticky-session username prefix (used by seloger_api_sweep.py).
+# Full username = f"{WEBSHARE_FR_STICKY_PREFIX}-{session}" (e.g. ualfuslo-fr-1).
+WEBSHARE_FR_STICKY_PREFIX = os.environ.get("WEBSHARE_FR_STICKY_PREFIX", "ualfuslo-fr")
 
 # ---------------------------------------------------------------------------
 # Webshare ROTATING residential plan (backbone, added 2026-08-20)

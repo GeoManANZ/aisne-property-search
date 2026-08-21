@@ -1,0 +1,14 @@
+# Python dependencies for the Aisne property-search scraper suite.
+# Generated 2026-08-21 from the working venv (`uv pip freeze`).
+# Install:  uv pip install --python .venv/bin/python -r requirements.txt
+#           .venv/bin/playwright install chromium   (playwright engines)
+#           .venv/bin/python -m camoufox fetch       (camoufox browser)
+
+camoufox==0.5.5
+lxml==6.1.1
+playwright==1.60.0
+playwright-stealth==2.0.3
+PySocks==1.7.1
+requests==2.34.2
+browserbase==1.17.0
+pillow==12.3.0

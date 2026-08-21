@@ -173,7 +173,7 @@ SeLoger SERP URL
 1. **Page 3+ click flakiness** — after page 2, clicking page 3 sometimes doesn't advance (nav re-render). Retry logic added; needs one more hardening pass (e.g. longer post-click settle, or click `page suivante` instead of `à la page N`). *(De-prioritised: the BFF API path in §6 replaces browser click-through entirely.)*
 2. **Session IP rotation mid-sweep** — if the winning session's IP rotates to a flagged one mid-run, pages fail. Session-cycling at start handles most cases.
 3. **Zilek (Turnstile)** — never attempted with 2Captcha.
-4. **Property report .MD Telegram delivery** — still owed (recommendations report exists locally).
+4. ~~Property report .MD Telegram delivery~~ — **DONE**: `recommendations_report.py` generates top-N Markdown; weekly cron (`Aisne Weekly Recommendations Report`, Mon 08:00 UTC) delivers via Telegram MEDIA. Price-drop alerts already delivered daily 09:00 UTC via `aisne_price_alert.py` cron (surface + €/m² included).
 5. ~~DB historical malformed prices~~ — **DONE**: validation layer (bulk_upsert_validated) rejects out-of-range prices/surfaces at ingest; all 395 current rows pass.
 
 ---
@@ -202,3 +202,35 @@ The first price-alert run reported 4 ParuVendu "drops" that were **all false**. 
 - **Live verification** — manually confirmed real prices (808,000, 460,000, etc.) via curl and corrected the DB + removed bogus `price_history` rows.
 
 **Rule:** NEVER trust a price change from a single scrape source. The structured search-card/API price is authoritative; detail-page parses are suspect; and an alert must be corroborated by the listing's current price before it's reported.
+
+---
+
+## 10. Cookie reuse + fingerprint consistency (learned 2026-08-21)
+
+The most expensive step in the SeLoger path is NOT the fetch — it's the
+**browser launch + DataDome challenge** that earns the `datadome` cookie.
+Once earned, that cookie is honoured for hours on the SAME residential IP.
+
+**Integration (seloger_api_sweep.py):**
+- `cookie_store.py` persists the earned cookies per sticky session key
+  (`ualfuslo-fr-<N>` — the sticky session always resolves to the same IP,
+  so the session id IS the cookie key).
+- Before launching Camoufox: `get_cookies(session_key, "www.seloger.com")`
+  → `ctx.add_cookies(...)` — skips the challenge entirely on warm runs.
+- After a successful sweep: extract `ctx.cookies()` filtered to seloger.com
+  → `save_cookies(...)` for the next run.
+- **Fingerprint consistency:** one `build_fingerprint()` per session threads
+  the SAME UA / locale / timezone / viewport into the Camoufox context.
+  `page.evaluate(fetch...)` inherits the context fingerprint automatically.
+  DataDome re-challenges on mixed fingerprints — never mix UA sources.
+
+**Rule:** earn the cookie once per sticky IP, persist it, reuse it. Treat
+2Captcha/DataDome solving as the LAST resort, not the default.
+
+## 11. Reproducibility (2026-08-21)
+
+- `requirements.txt` pinned from working venv (camoufox 0.5.5, playwright
+  1.60, lxml 6.1.1, requests, PySocks, playwright-stealth).
+- `cron.example` — daily sweep/ladder/alert schedules (cron + systemd timer).
+- `.env` is the single credential source; config.py FAILS LOUDLY (no silent
+  fallback to another project's proxy_config.py anymore).

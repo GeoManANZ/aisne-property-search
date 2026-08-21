@@ -15,115 +15,123 @@ debug, and operate it.
 ## 1. PROJECT LOCATION & ENVIRONMENT
 
 - **Working directory:** `/workspace/hermes1/projects/aisne-property-search/`
+- **Git remote:** `git@github.com:GeoManANZ/aisne-property-search.git` (origin/main)
 - **Python:** always use the project venv: `.venv/bin/python` (never system python)
 - **Install deps:** `cd` to project then `uv pip install --python .venv/bin/python <pkg>`
 - **Key installed packages:** requests, PySocks, playwright, playwright-stealth,
-  browserbase, pillow
-- **Browsers:** Playwright Chromium is at `/opt/hermes/.playwright/chromium-1228/chrome-linux64/chrome`.
-  Set `PLAYWRIGHT_BROWSERS_PATH=/opt/data/.playwright-browsers` when launching via Playwright.
-  Firefox (if needed) is in `.browsers/`.
-- **Git:** repo is git-initialized on `main`. Commit after meaningful changes.
+  camoufox, browserbase, pillow, lxml
+- **Browsers:** Camoufox (main SeLoger path); Playwright Chromium at
+  `/opt/data/.playwright-browsers`. Set `PLAYWRIGHT_BROWSERS_PATH=/opt/data/.playwright-browsers`
+  when launching via Playwright.
+- **Secrets:** `.env` (gitignored). Webshare rotating-plan creds live there —
+  username prefix `ualfuslo`, French sticky sessions `ualfuslo-fr-N`.
+- **Git:** repo is on `main`, pushed to GitHub. Commit after meaningful changes
+  and push to origin.
 
 ## 2. FILES (read these to understand the system)
 
 | File | Purpose |
 |---|---|
-| `french-property-scraper.py` | Core multi-engine scraper (7 engines, see §3) |
-| `french-property-parsers.py` | Portal search parsers + `ladder` crawl CLI |
-| `listings_db.py` | SQLite store: upsert, query, price-history/price-drop tracking |
-| `seed_listings_db.py` | Migrates scan JSON → listings.db |
-| `listings.db` | The live database (SQLite) |
-| `blocked_sites.txt` | Test URLs for previously-blocked portals |
-| `scan_list.txt` | Full URL list to sweep |
-| `scans/` | Scan artifacts (HTML dumps, results.json, scanned_details.json) |
-| `residential-proxy-crack-report-2026-08-18.md` | How Orpi was cracked |
-| `enhanced-scraper-report-2026-08-18.md` | Earlier capability report |
+| `seloger_api_sweep.py` | **THE SeLoger path (definitive)** — BFF API via Camoufox + Webshare FR sticky proxy. Reads `seloger_pages/all_listings_api.json` |
+| `french_property_parsers.py` | Portal search parsers (FNAIM / IAD / ParuVendu) + `ladder` crawl CLI + `scan_detail_page` |
+| `listings_db.py` | SQLite store: upsert, query, validation, price-history/price-drop tracking |
+| `price_alert.py` | Genuine price-drop detection → Telegram-ready message |
+| `config.py` | Central config: secrets, proxy builders (`webshare_rotate_url`), fingerprint builder |
+| `cookie_store.py` | Persist/reuse datadome cookies per (sticky-IP, domain) |
+| `engine_metrics.py` | Adaptive routing: records engine outcomes, `best_engine_for()` |
+| `french_property_scraper.py` | General-purpose multi-engine cascade (SECONDARY — Orpi/detail enrichment/other portals) |
+| `listings.db` | The live database (SQLite, gitignored) |
+| `archive/` | Dead/legacy scripts from earlier approaches (do NOT resurrect) |
+| `LEARNINGS.md` | Operational lessons, incl. price-drop false-positive prevention |
 
-## 3. THE 7-ENGINE CASCADE (in `french-property-scraper.py`)
+## 3. THE PRIMARY PIPELINE (SeLoger via BFF API — 2026 pattern)
 
-The scraper tries engines in order until one returns non-blocked content:
+SeLoger is a JS SPA behind DataDome. The working approach (verified 2026-08-20,
+no CAPTCHA solving involved):
 
-| # | Engine | Mechanism | Best for |
-|---|---|---|---|
-| 1 | `direct` | plain requests + browser headers | FNAIM, iad, ParuVendu |
-| 2 | `warp` | requests via `socks5h://cloudflare-warp:1080` | datacenter-IP blacklists |
-| 3 | `lightpanda` | fastCRW headless JS browser (`http://fastcrw:3000/v1/scrape`) | simple JS "checking your browser" gates |
-| 4 | `stealth` | Playwright + playwright-stealth Chromium | Cloudflare fingerprinting (403 → 200) |
-| 5 | `webshare` | plain `requests` HTTP via Webshare residential proxy | hard IP-blocks — often enough alone, fastest |
-| 6 | `webshare-stealth` | stealth Chromium via Webshare residential proxy | hard IP-blocks needing JS |
+1. **Camoufox browser** loads the SERP once through a **Webshare French sticky
+   residential proxy** (`ualfuslo-fr-N` — same IP every request).
+2. This earns the `datadome` cookie in the browser context.
+3. **From inside that browser context**, `page.evaluate(fetch(...))` calls the
+   BFF API:
+   - `POST https://www.seloger.com/serp-bff/search` (JSON criteria + paging) → ids
+   - `GET https://www.seloger.com/classifiedList/<ids>` → full structured cards
+4. Cards → `card_to_listing()` → `listings.db` (via `bulk_upsert_validated`).
+5. **Cookie reuse:** `cookie_store.py` saves the earned datadome cookie per
+   sticky IP; the next run injects it and skips the challenge.
 
-(The old name `residential` = alias for webshare-stealth.)
-
-**Webshare proxies** come from `/workspace/hermes1/projects/nz-mortgage-saas/scrapers/proxy_config.py`
-(proxy list + user). Format: `http://USER:PASS@ip:port`. Free plan = ~8 static IPs;
-rotates round-robin. Credentials: user `ualfuslo`; password comes from that config file.
-
-**Known status (verified 2026-08-18):**
-- ✅ Cracked: Orpi (hard Cloudflare block) via engines 5/6. Extracted 194,900 € / 180 m² correctly.
-- ✅ Working: FNAIM, iad, ParuVendu, Notaires (direct)
-- ❌ Still blocked: SeLoger + Logic-Immo (DataDome interactive CAPTCHA), Superimmo
-  (hCaptcha), Zilek (Cloudflare JS challenge that never auto-completes headless).
-  DataDome/hCaptcha need a CAPTCHA-solving service (CapMonster/2captcha) or human;
-  the user has DECLINED CapMonster for now.
-
-## 4. COMMANDS
+Run it:
 
 ```bash
 cd /workspace/hermes1/projects/aisne-property-search/
-
-# Scan a single URL through the full cascade (all engines in order)
-.venv/bin/python french-property-scraper.py --engine cascade --url "https://..."
-
-# Use a specific engine
-.venv/bin/python french-property-scraper.py --engine webshare --url "https://..."
-.venv/bin/python french-property-scraper.py --engine stealth --stealth-no-warp --url "https://..."
-
-# Batch scan from a file (name | url per line)
-.venv/bin/python french-property-scraper.py --input blocked_sites.txt --engine cascade
-
-# Run the ladder (search + detail scan + auto-upsert into listings.db)
-.venv/bin/python french-property-parsers.py ladder --detail-scan all \
-    --sources fnaim iad paruvendu --max 200 --delay 1
-
-# Rebuild/seed the DB from scan artifacts
-.venv/bin/python seed_listings_db.py
-
-# Query the database
-.venv/bin/python -c "
-from listings_db import ListingsDB
-db = ListingsDB('listings.db')
-rows = db.query(max_price=200000, min_surface=150, order_by='price_eur ASC')
-for r in rows: print(r)
-db.price_drops()   # recent price reductions
-db.close()"
+.venv/bin/python seloger_api_sweep.py [--max-pages 9] [--sessions 8]
 ```
 
-## 5. SEARCH CRITERIA (what we're looking for)
+Do NOT try HTML parsing or CAPTCHA solving for SeLoger — the BFF path is the
+only one that works reliably.
 
-- **Area:** Soissons (02200) / Laon (02000) / Bruyères-et-Montbérault / Villers-Cotterêts
-  + the corridor + south/central Aisne villages. Do NOT over-tighten to Bruyères.
+## 4. THE LADDER (FNAIM / IAD / ParuVendu — plain HTML)
+
+```bash
+.venv/bin/python french_property_parsers.py ladder --sources fnaim iad paruvendu \
+    --max 200 --delay 1
+# optional: scan detail pages for richer data
+.venv/bin/python french_property_parsers.py ladder --detail-scan all \
+    --sources fnaim iad paruvendu --max 200 --delay 1
+```
+
+Detail-scan merges are FALLBACK-ONLY: the search-card price is authoritative;
+a detail-page price never overrides it (prevents the 808,000→58,248 corruption
+incident — see LEARNINGS §9).
+
+## 5. THE CASCADE (french_property_scraper.py — SECONDARY)
+
+`french_property_scraper.py` is the general-purpose multi-engine cascade for
+portals NOT covered above: Orpi, Zilek, Logic-Immo, Superimmo, etc. It tries
+engines in order (`direct → warp → lightpanda → stealth → webshare →
+webshare-stealth`), and `engine_metrics.py` records outcomes so routing
+adapts to what historically works per domain/challenge.
+
+Use it only for detail enrichment or portals outside the main four. If you are
+about to run the cascade on `www.seloger.com` — STOP. Use `seloger_api_sweep.py`.
+
+## 6. PRICE DROPS
+
+```bash
+.venv/bin/python price_alert.py [--days 30] [--min-pct 5] [--json]
+```
+
+Genuine-drop guards (do not bypass):
+- old/new price must be plausible (€5k–€50M; new must be ≥€10k)
+- the CURRENT listings-table price must equal the new (lower) price (corroboration)
+- a daily cron (`Aisne Price Drop Alert`, 09:00 UTC, no_agent) runs the same
+  logic from `/opt/data/scripts/aisne_price_alert.py` and posts to Telegram.
+
+## 7. DATABASE (listings.db)
+
+- `listings` table: one row per unique URL (primary key). Columns: url, source,
+  title, price_eur, surface_m2, dpe_energy, location, agency, description,
+  features, tags, first_seen, last_seen.
+- `price_history` table: append-only price log → powers `price_drops()`.
+- **Upsert semantics:** re-scraping a URL updates fields + last_seen, never
+  duplicates. First price is logged too, so drops compare against a real prior.
+- All rows pass `validate_listing()` at ingest (URL shape, price/surface ranges).
+
+## 8. SEARCH CRITERIA (what we're looking for)
+
+- **Area:** Soissons (02200) / Laon (02000) / Bruyères-et-Montbérault /
+  Villers-Cotterêts + the corridor + south/central Aisne villages.
 - **Property type:** mixed-use (commercial RDC + residential), former
-  restaurant/café/shop/workshop, immeubles de rapport (3+ units), large character
-  houses, annexes.
+  restaurant/café/shop/workshop, immeubles de rapport (3+ units), large
+  character houses, annexes.
 - **Size:** 150+ m² (ideal 180–300).
 - **Price:** < €220k preferred (especially < €180k).
 - **Value:** €/m² < 900–1,000 good, < 600 excellent.
 - **Renovation** OK (often priced cheaper).
-- **Reference benchmark:** €84,700 / 214 m² mixed-use immeuble (102 m² RDC vitrine
-  + ~107 m² apartment, courtyard + cellar).
+- **Reference benchmark:** €84,700 / 214 m² mixed-use immeuble (102 m² RDC
+  vitrine + ~107 m² apartment, courtyard + cellar).
 
-## 6. DATABASE (listings.db)
-
-- `listings` table: one row per unique URL (primary key). Columns: url, source,
-  title, price_eur, surface_m2, dpe_energy, location, agency, description,
-  first_seen, last_seen.
-- `price_history` table: append-only price log → powers `price_drops()` for
-  "price reduced" alerts.
-- **Upsert semantics:** re-scraping a URL updates fields + last_seen, never
-  duplicates. First price is logged too, so drops compare against a real prior.
-- Seeded with ~69 listings across fnaim/iad/paruvendu/orpi.
-
-## 7. HONESTY RULES (critical)
+## 9. HONESTY RULES (critical)
 
 - **NEVER fabricate** listing data, prices, surfaces, DPE, or scrape results.
   If you can't fetch a page, say so and report the actual error/status.
@@ -131,31 +139,31 @@ db.close()"
   yourself and show real output.
 - Report blocked pages as blocked (403 / CAPTCHA / challenge), not as successes.
 - If a command fails, show the real error and try the documented alternative
-  (different engine, different proxy) before concluding.
+  before concluding.
 - When you find something, give: price, surface, DPE, €/m², source, location,
   and the live URL.
 
-## 8. WHAT TO DO WHEN ASKED
+## 10. WHAT TO DO WHEN ASKED
 
-- "Scan X" → run the cascade on X, report price/surface/DPE/€/m² + link, or the
-  exact block reason.
+- "Scan X" → use the correct path (SeLoger → `seloger_api_sweep.py`; others →
+  ladder or cascade), report price/surface/DPE/€/m² + link, or the exact block.
 - "Find listings <€220k, 150+ m²" → query `listings.db` with those filters,
   rank by €/m² ascending, return top N with links.
-- "Are there new listings / price drops?" → run `seed_listings_db.py` (or a fresh
-  ladder) then `db.price_drops()` and compare to prior DB state.
-- "Debug engine failure" → run the specific engine on a URL, read the diagnostics
-  log, identify whether it's a 403/block/crash, and propose the fix.
-- "Extend the scraper" → read `french-property-scraper.py` first (it is heavily
-  commented — respect its structure), add a new engine following the existing
-  pattern, then test it live and commit.
+- "Are there new listings / price drops?" → run the relevant sweep(s), then
+  `price_alert.py` and compare to prior DB state.
+- "Debug engine failure" → run the specific engine on a URL, read the
+  diagnostics, identify whether it's a 403/block/crash, and propose the fix.
+- "Extend the scraper" → read the relevant file first (they are heavily
+  commented — respect their structure), add following the existing pattern,
+  then test it live and commit + push.
 
-## 9. CONTEXT / CONVENTIONS
+## 11. CONTEXT / CONVENTIONS
 
 - French search terms for portals: "immeuble", "immeuble de rapport",
   "local commercial", "ancien restaurant".
-- The engineer is a contractor engineer; wants ONE decisive recommendation, not a
-  menu of options, unless options are explicitly requested.
+- The engineer is a contractor engineer; wants ONE decisive recommendation, not
+  a menu of options, unless options are explicitly requested.
 - Property listings are cross-listed across portals — dedupe by URL.
-- `scans/*/scanned_details.json` holds the richest structured data; `results.json`
-  holds single-URL diagnostics.
-- This project is version-controlled; commit meaningful work with clear messages.
+- `archive/` holds retired code — do not resurrect it without asking.
+- This project is version-controlled and pushed to GitHub; commit meaningful
+  work with clear messages and push.

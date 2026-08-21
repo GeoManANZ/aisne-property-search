@@ -88,11 +88,15 @@ def format_alert(drops: list[dict]) -> str:
     ]
     for d in drops:
         title = (d.get("title") or "Immeuble")[:45]
-        loc = ""
+        loc = (d.get("location") or "")
         src = d.get("source", "")
+        surf = d.get("surface_m2")
+        surf_txt = f" · {surf:,.0f} m²" if surf else ""
+        ppm = d.get("price_per_m2")
+        ppm_txt = f" · {ppm:,.0f} €/m²" if ppm else ""
         lines.append(
             f"• **{d['old_price']:,.0f} → {d['new_price']:,.0f} €** "
-            f"({d['pct']:.0f}%) — {title}"
+            f"({d['pct']:.0f}%) — {title}{surf_txt}{ppm_txt}"
         )
         lines.append(f"  [{src}] {d['url']}")
     lines.append("")

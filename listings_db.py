@@ -325,7 +325,7 @@ class ListingsDB:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         cur = self.conn.execute(
             """
-            SELECT ph.url, l.title, l.source, l.status,
+            SELECT ph.url, l.title, l.source, l.status, l.surface_m2,
                    ph.price_eur AS new_price,
                    (SELECT price_eur FROM price_history ph2
                     WHERE ph2.url = ph.url AND ph2.id < ph.id
@@ -343,12 +343,14 @@ class ListingsDB:
         )
         cols = [d[0] for d in cur.description]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
-        # dedupe per URL (keep the latest drop)
+        # dedupe per URL (keep the latest drop); compute €/m² where possible
         seen: set[str] = set()
         out = []
         for r in rows:
             if r["url"] not in seen:
                 seen.add(r["url"])
+                surf = r.get("surface_m2")
+                r["price_per_m2"] = (r["new_price"] / surf) if (surf and surf > 0) else None
                 out.append(r)
         return out
 
@@ -365,7 +367,7 @@ class ListingsDB:
 
 if __name__ == "__main__":
     # Self-test
-    db = ListingsDB("/workspace/hermes1/projects/aisne-property-search/listings.db")
+    db = ListingsDB(Path(__file__).parent / "listings.db")
     db.upsert_listing(url="https://example.com/test1", source="fnaim",
                       title="Immeuble test", price_eur=100000, surface_m2=200,
                       location="Laon")

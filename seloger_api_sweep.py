@@ -23,6 +23,10 @@ from datetime import datetime, timezone
 sys.path.insert(0, Path(__file__).parent.as_posix())
 
 from french_property_parsers import _clean_seloger_price
+from cookie_store import get_cookies, save_cookies
+from engine_metrics import record_outcome
+
+SELOGER_DOMAIN = "www.seloger.com"
 
 BASE_URL = ("https://www.seloger.com/recherche/achat/immeuble/"
             "hauts-de-france/aisne-02/ad06fr2")
@@ -200,7 +204,8 @@ def main():
     outdir = Path(args.outdir)
     outdir.mkdir(exist_ok=True)
 
-    from config import WEBSHARE_PROXY_PASS, WEBSHARE_ROTATE_HOSTS
+    from config import WEBSHARE_ROTATE_HOSTS, \
+        WEBSHARE_FR_STICKY_PREFIX, webshare_rotate_url, build_fingerprint
     host = WEBSHARE_ROTATE_HOSTS[0]
     from camoufox.sync_api import Camoufox
 
@@ -208,14 +213,29 @@ def main():
     seen = set()
 
     for session in range(1, args.sessions + 1):
-        proxy_url = f"http://ualfuslo-fr-{session}:{WEBSHARE_PROXY_PASS}@{host}"
-        print(f"=== session fr-{session} ===", flush=True)
-        launch = {"headless": True, "locale": "fr-FR", "humanize": True,
+        proxy_url = webshare_rotate_url(session=session, country="fr", host_idx=0)
+        # cookie_store keys by the sticky session id — the datadome cookie is
+        # bound to the residential IP that earned it, and ualfuslo-fr-<N>
+        # always resolves to the SAME IP, so the session id is the key.
+        session_key = f"{WEBSHARE_FR_STICKY_PREFIX}-{session}"
+        fp = build_fingerprint()
+        print(f"=== session fr-{session} ({fp['user_agent'][:30]}...) ===", flush=True)
+        t0 = time.time()
+        launch = {"headless": True, "locale": fp["locale"], "humanize": True,
                   "geoip": False, "proxy": {"server": proxy_url}}
         try:
             with Camoufox(**launch) as browser:
-                ctx = browser.new_context(locale="fr-FR", timezone_id="Europe/Paris",
-                                          viewport={"width": 1440, "height": 900})
+                ctx = browser.new_context(locale=fp["locale"], timezone_id=fp["timezone_id"],
+                                          viewport=fp["viewport"],
+                                          user_agent=fp["user_agent"])
+                # Reuse a previously-earned datadome cookie for this sticky IP
+                saved = get_cookies(session_key, SELOGER_DOMAIN)
+                if saved:
+                    try:
+                        ctx.add_cookies(saved)
+                        print(f"  injected {len(saved)} saved cookies", flush=True)
+                    except Exception as e:
+                        print(f"  cookie inject failed: {type(e).__name__}", flush=True)
                 page = ctx.new_page()
                 ok = False
                 for attempt in range(3):
@@ -233,6 +253,10 @@ def main():
                 if len(html) < 3000 or any(b in html.lower() for b in
                                            ("geochallenge", "captcha-delivery", "prouvez")):
                     print(f"  fr-{session} IP flagged — next", flush=True)
+                    record_outcome(domain=SELOGER_DOMAIN, challenge="datadome",
+                                   engine="camoufox", success=False,
+                                   timing_s=time.time() - t0, proxy_ip=session_key,
+                                   error="challenge/flagged page")
                     continue
 
                 # ---- API sweep from inside the browser context ----
@@ -293,10 +317,30 @@ def main():
                                 new += 1
                     print(f"    → {new} new listings (total {len(listings)})", flush=True)
                 print(f"  session fr-{session} done: {len(listings)} listings", flush=True)
+                # Persist the earned datadome cookie for the NEXT run — the
+                # single most expensive step (browser launch + challenge) is
+                # skipped if we can inject a fresh-enough cookie.
+                try:
+                    cookies = ctx.cookies()
+                    seloger_cookies = [c for c in cookies
+                                       if "seloger.com" in c.get("domain", "")]
+                    if seloger_cookies:
+                        save_cookies(session_key, SELOGER_DOMAIN, seloger_cookies)
+                        print(f"  saved {len(seloger_cookies)} cookies for reuse",
+                              flush=True)
+                except Exception as e:
+                    print(f"  cookie save failed: {type(e).__name__}", flush=True)
+                record_outcome(domain=SELOGER_DOMAIN, challenge="datadome",
+                               engine="camoufox", success=True,
+                               timing_s=time.time() - t0, proxy_ip=session_key)
                 if listings:
                     break
         except Exception as e:
             print(f"  fr-{session} error: {type(e).__name__}: {str(e)[:60]}", flush=True)
+            record_outcome(domain=SELOGER_DOMAIN, challenge="datadome",
+                           engine="camoufox", success=False,
+                           timing_s=time.time() - t0, proxy_ip=session_key,
+                           error=str(e)[:120])
 
     out = outdir / "all_listings_api.json"
     out.write_text(json.dumps(listings, indent=2, ensure_ascii=False), encoding="utf-8")
