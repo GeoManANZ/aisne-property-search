@@ -151,6 +151,25 @@ def card_to_listing(c: dict) -> dict:
     if isinstance(prov, dict):
         agency = prov.get("title") or prov.get("name")
 
+    # --- features / tags (structured enrichment) ---
+    features = []
+    hf = c.get("hardFacts") or {}
+    if isinstance(hf, dict):
+        for f in hf.get("facts") or []:
+            if isinstance(f, dict) and f.get("label"):
+                val = f.get("value") or f.get("splitValue") or ""
+                features.append(f"{f.get('label')} {val}".strip())
+        if hf.get("keyfacts"):
+            features.extend(hf["keyfacts"])
+    tags = c.get("tags") or {}
+    if not isinstance(tags, dict):
+        tags = {}
+    # gallery count
+    gal = c.get("gallery") or {}
+    n_photos = 0
+    if isinstance(gal, dict) and isinstance(gal.get("images"), list):
+        n_photos = len(gal["images"])
+
     return {
         "source": "seloger",
         "url": url,
@@ -162,6 +181,8 @@ def card_to_listing(c: dict) -> dict:
         "location": location,
         "agency": agency,
         "description": description,
+        "features": __import__("json").dumps(features, ensure_ascii=False) if features else None,
+        "tags": __import__("json").dumps({**tags, "photos": n_photos}, ensure_ascii=False) if tags or n_photos else None,
         "ref": c.get("id"),
         "raw_title": title,
         "parsed_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
@@ -280,10 +301,10 @@ def main():
     out.write_text(json.dumps(listings, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nSaved {len(listings)} unique listings → {out}")
     try:
-        from listings_db import ListingsDB
+        from listings_db import ListingsDB, bulk_upsert_validated
         db = ListingsDB(Path(__file__).parent / "listings.db")
-        db.bulk_upsert(listings)
-        print(f"DB upsert: {len(listings)} rows (total {db.count()})")
+        accepted, rejected = bulk_upsert_validated(db, listings)
+        print(f"DB upsert: {accepted} accepted, {rejected} rejected (total {db.count()})")
         db.close()
     except Exception as e:
         print(f"DB upsert failed: {type(e).__name__}: {str(e)[:80]}")

@@ -1006,7 +1006,7 @@ def ladder(
                 "agency": detail.get("agency") or item.get("agency"),
                 "description": detail.get("description_snippet") or item.get("raw_text"),
             })
-        db.bulk_upsert(db_records)
+        db.bulk_upsert_validated(db_records)
         db.close()
         log_lines.append(f"  DB: upserted {len(db_records)} records (running total in listings.db)")
     except Exception as e:
