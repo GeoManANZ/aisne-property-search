@@ -1,0 +1,13 @@
+=== session fr-1 (Mozilla/5.0 (Macintosh; Intel ...) ===
+  injected 1 saved cookies
+  fr-1 IP flagged — next
+=== session fr-2 (Mozilla/5.0 (Windows NT 10.0; ...) ===
+  page 1: 30 ids (total 254)
+    → 30 new listings (total 30)
+  page 2: 30 ids (total 254)
+    → 30 new listings (total 60)
+  session fr-2 done: 60 listings
+  saved 1 cookies for reuse
+
+Saved 60 unique listings → seloger_pages/all_listings_api.json
+DB upsert: 60 accepted, 0 rejected (total 396)

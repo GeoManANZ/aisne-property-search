@@ -1,0 +1,12 @@
+=== session fr-1 (Mozilla/5.0 (Windows NT 10.0; ...) ===
+/workspace/hermes1/projects/aisne-property-search/seloger_api_sweep.py:227: LeakWarning: When using a proxy, it is heavily recommended that you pass `geoip=True`.
+  with Camoufox(**launch) as browser:
+  page 1: 30 ids (total 254)
+    → 30 new listings (total 30)
+  page 2: 30 ids (total 254)
+    → 30 new listings (total 60)
+  session fr-1 done: 60 listings
+  saved 1 cookies for reuse
+
+Saved 60 unique listings → seloger_pages/all_listings_api.json
+DB upsert: 60 accepted, 0 rejected (total 396)

@@ -222,7 +222,7 @@ def main():
         print(f"=== session fr-{session} ({fp['user_agent'][:30]}...) ===", flush=True)
         t0 = time.time()
         launch = {"headless": True, "locale": fp["locale"], "humanize": True,
-                  "geoip": False, "proxy": {"server": proxy_url}}
+                  "geoip": True, "proxy": {"server": proxy_url}}
         try:
             with Camoufox(**launch) as browser:
                 ctx = browser.new_context(locale=fp["locale"], timezone_id=fp["timezone_id"],
@@ -317,16 +317,17 @@ def main():
                                 new += 1
                     print(f"    → {new} new listings (total {len(listings)})", flush=True)
                 print(f"  session fr-{session} done: {len(listings)} listings", flush=True)
-                # Persist the earned datadome cookie for the NEXT run — the
-                # single most expensive step (browser launch + challenge) is
-                # skipped if we can inject a fresh-enough cookie.
+                # Persist the earned cookies for the NEXT run — the single
+                # most expensive step (browser launch + challenge) is skipped
+                # if we can inject a fresh-enough cookie.  Save ALL context
+                # cookies (not just *.seloger.com): DataDome's clearance token
+                # may sit on a different host (.datadome.co, a CDN) but is
+                # still IP-bound and re-usable on this sticky session.
                 try:
                     cookies = ctx.cookies()
-                    seloger_cookies = [c for c in cookies
-                                       if "seloger.com" in c.get("domain", "")]
-                    if seloger_cookies:
-                        save_cookies(session_key, SELOGER_DOMAIN, seloger_cookies)
-                        print(f"  saved {len(seloger_cookies)} cookies for reuse",
+                    if cookies:
+                        save_cookies(session_key, SELOGER_DOMAIN, cookies)
+                        print(f"  saved {len(cookies)} cookies for reuse",
                               flush=True)
                 except Exception as e:
                     print(f"  cookie save failed: {type(e).__name__}", flush=True)
