@@ -186,3 +186,19 @@ SeLoger SERP URL
 4. **Managed API evaluation** — Scrapfly/ScrapeBadger as a paid fallback if free browser path degrades.
 5. **Mobile-IP rotation** — DataDome research says mobile IPs score even higher trust; Webshare plan may offer mobile exits.
 6. ~~Detail-page enrichment~~ — **DONE** (ParuVendu): descriptions enriched 336→645 chars avg via scan_detail_page; JS noise cleaned.
+
+---
+
+## 9. Price-Drop Alerts — false-positive prevention (learned 2026-08-21)
+
+The first price-alert run reported 4 ParuVendu "drops" that were **all false**. Root cause chain:
+1. **Detail-page price parser is unreliable** — `scan_detail_page` grabbed hidden/embedded numbers (e.g. 58,248 €) instead of the visible price (808,000 €) on ParuVendu detail pages.
+2. **The detail-scan OVERWROTE good prices** — the ladder merge used `detail.get("price_eur") or item.get("price_eur")`, letting the bad detail price override the correct search-card price.
+3. **The alert trusted the polluted history** — it saw 808,000 → 58,248 and reported a 93% "drop."
+
+**Fixes (all applied):**
+- **Merge precedence** — search-card price now takes priority; detail price only used as fallback.
+- **Alert corroboration guard** — a drop is only reported if the CURRENT `listings.price_eur` equals the lower (new) price. Transient/artifact values never match, so they're discarded.
+- **Live verification** — manually confirmed real prices (808,000, 460,000, etc.) via curl and corrected the DB + removed bogus `price_history` rows.
+
+**Rule:** NEVER trust a price change from a single scrape source. The structured search-card/API price is authoritative; detail-page parses are suspect; and an alert must be corroborated by the listing's current price before it's reported.

@@ -995,11 +995,22 @@ def ladder(
             if not url:
                 continue
             detail = detail_by_url.get(url, {})
+            # PRICE precedence: the search-card (item) price is parsed from the
+            # reliable listing card and is CORRECT. The detail-page price is
+            # unreliable (grabs hidden/embedded numbers, e.g. 58,248 vs the real
+            # 808,000) — so NEVER let it override a valid search-card price.
+            # Only fall back to detail price if the search price is missing.
+            item_price = item.get("price_eur") or item.get("price")
+            detail_price = detail.get("price_eur")
+            if item_price:
+                price = item_price
+            else:
+                price = detail_price
             db_records.append({
                 "url": url,
                 "source": item.get("source") or detail.get("source"),
                 "title": detail.get("title") or item.get("title"),
-                "price_eur": detail.get("price_eur") or item.get("price_eur") or item.get("price"),
+                "price_eur": price,
                 "surface_m2": detail.get("surface_m2") or item.get("surface_m2"),
                 "dpe_energy": detail.get("dpe_energy") or item.get("dpe_energy"),
                 "location": detail.get("location") or item.get("location"),

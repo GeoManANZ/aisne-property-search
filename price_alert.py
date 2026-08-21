@@ -42,21 +42,33 @@ def load_db():
 def get_real_drops(db, days: int = 30, min_pct: float = 0.0) -> list[dict]:
     """Return genuine price drops, filtering parser artifacts.
 
-    A drop is "real" if:
+    A drop is "real" only if it meets ALL of:
       - old_price is plausible (5k–50M)
-      - new_price is plausible (5k–50M)
-      - old > new (by definition)
+      - new_price is plausible (>=10k, <=50M) — below €10k is a parse artifact
+      - the CURRENT listings table price matches the new_price (i.e. the drop
+        is corroborated by the live value, not a stale/transient entry)
+      - old > new
+
+    The current-price check is the key anti-false-positive guard: a "drop"
+    is only real if the listing's current price genuinely equals the lower
+    figure. If the detail-scan or a bad parse briefly logged a wrong value,
+    the current price won't match it and the drop is discarded.
     """
     drops = db.price_drops(days)
+    # map url -> current price in the listings table
+    cur = {r[0]: r[1] for r in db.conn.execute(
+        "SELECT url, price_eur FROM listings").fetchall()}
     out = []
     for d in drops:
         old, new = d.get("old_price"), d.get("new_price")
         if old is None or new is None:
             continue
-        # exclude malformed historical prices and implausibly-low new prices.
-        # Floor is €10k — anything below is a parse artifact, not a real drop
-        # (a 250m² immeuble is never €5k).
+        # plausible old price, plausible new price
         if not (5000 <= old <= 50_000_000) or not (10000 <= new <= 50_000_000):
+            continue
+        # CORROBORATION: current DB price must equal the new (lower) price.
+        # Otherwise this "drop" is a transient/artifact and must be ignored.
+        if cur.get(d.get("url")) != new:
             continue
         pct = (old - new) / old * 100 if old else 0
         if pct < min_pct:
