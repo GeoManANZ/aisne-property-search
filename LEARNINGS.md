@@ -170,19 +170,19 @@ SeLoger SERP URL
 
 ## 7. Still Open / Known Issues
 
-1. **Page 3+ click flakiness** — after page 2, clicking page 3 sometimes doesn't advance (nav re-render). Retry logic added; needs one more hardening pass (e.g. longer post-click settle, or click `page suivante` instead of `à la page N`).
-2. **Session IP rotation mid-sweep** — if the winning session's IP rotates to a flagged one mid-run, pages fail. Consider re-cycling sessions on stuck.
+1. **Page 3+ click flakiness** — after page 2, clicking page 3 sometimes doesn't advance (nav re-render). Retry logic added; needs one more hardening pass (e.g. longer post-click settle, or click `page suivante` instead of `à la page N`). *(De-prioritised: the BFF API path in §6 replaces browser click-through entirely.)*
+2. **Session IP rotation mid-sweep** — if the winning session's IP rotates to a flagged one mid-run, pages fail. Session-cycling at start handles most cases.
 3. **Zilek (Turnstile)** — never attempted with 2Captcha.
-4. **Property report .MD Telegram delivery** — still owed.
-5. **DB historical malformed prices** — e.g. `250053990` (concatenated) need sanitizing during sweeps.
+4. **Property report .MD Telegram delivery** — still owed (recommendations report exists locally).
+5. ~~DB historical malformed prices~~ — **DONE**: validation layer (bulk_upsert_validated) rejects out-of-range prices/surfaces at ingest; all 395 current rows pass.
 
 ---
 
 ## 8. Improvement Opportunities
 
-1. **Full JSON schema extraction** — `pageProps.classifiedsData` has richer fields (gallery, tags, cps, market insights) than what we store. Extend parse_ufrn to capture more.
+1. ~~Full JSON schema extraction~~ — **DONE**: features (245/256), tags+photos (256/256) captured from classifiedList; schema migrated with `features`/`tags` columns.
 2. **Scheduled sweeps** — cron the pagination sweep daily; DB has `status`/`last_check` columns for bookkeeping.
 3. **Price-drop alerts** — `price_drops(days)` windowed query exists; wire into a daily notification.
 4. **Managed API evaluation** — Scrapfly/ScrapeBadger as a paid fallback if free browser path degrades.
 5. **Mobile-IP rotation** — DataDome research says mobile IPs score even higher trust; Webshare plan may offer mobile exits.
-6. **Detail-page enrichment** — visit each `detail.htm` URL for full descriptions, photos, DPE certificates, co-ownership info (valuable for the holiday-home investment brief).
+6. ~~Detail-page enrichment~~ — **DONE** (ParuVendu): descriptions enriched 336→645 chars avg via scan_detail_page; JS noise cleaned.
