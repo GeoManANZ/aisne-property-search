@@ -19,6 +19,7 @@ This avoids: HTML parsing, click timing, DOM state races.
 """
 import sys, re, time, json, argparse
 from pathlib import Path
+from datetime import datetime, timezone
 sys.path.insert(0, Path(__file__).parent.as_posix())
 
 from french_property_parsers import _clean_seloger_price
@@ -181,11 +182,11 @@ def card_to_listing(c: dict) -> dict:
         "location": location,
         "agency": agency,
         "description": description,
-        "features": __import__("json").dumps(features, ensure_ascii=False) if features else None,
-        "tags": __import__("json").dumps({**tags, "photos": n_photos}, ensure_ascii=False) if tags or n_photos else None,
+        "features": json.dumps(features, ensure_ascii=False) if features else None,
+        "tags": json.dumps({**tags, "photos": n_photos}, ensure_ascii=False) if tags or n_photos else None,
         "ref": c.get("id"),
         "raw_title": title,
-        "parsed_at": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
+        "parsed_at": datetime.now(timezone.utc).isoformat(),
         "source_page": BASE_URL,
     }
 
@@ -301,9 +302,9 @@ def main():
     out.write_text(json.dumps(listings, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nSaved {len(listings)} unique listings → {out}")
     try:
-        from listings_db import ListingsDB, bulk_upsert_validated
+        from listings_db import ListingsDB
         db = ListingsDB(Path(__file__).parent / "listings.db")
-        accepted, rejected = bulk_upsert_validated(db, listings)
+        accepted, rejected = db.bulk_upsert_validated(listings)
         print(f"DB upsert: {accepted} accepted, {rejected} rejected (total {db.count()})")
         db.close()
     except Exception as e:

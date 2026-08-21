@@ -142,25 +142,6 @@ def validate_listing(item: dict) -> tuple[dict, list[str]]:
     return it, errors
 
 
-def bulk_upsert_validated(db, listings: list[dict], now: str | None = None,
-                          reject_log=None) -> tuple[int, int]:
-    """Validate + upsert many listings. Returns (accepted, rejected)."""
-    accepted = 0
-    rejected = 0
-    for item in listings:
-        cleaned, errors = validate_listing(item)
-        if any(e.startswith("reject") for e in errors):
-            rejected += 1
-            if reject_log is not None:
-                reject_log.append((item.get("url"), item.get("source"), errors))
-            continue
-        db.upsert_listing(now=now, **{k: v for k, v in cleaned.items()
-                                      if k in _FIELDS})
-        accepted += 1
-    db.conn.commit()
-    return accepted, rejected
-
-
 class ListingsDB:
     """Thin, safe wrapper around a SQLite file for property listings."""
 

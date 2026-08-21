@@ -44,28 +44,6 @@ def fetch(url: str, timeout: int = 30) -> str:
     return r.text
 
 
-def fetch_seloger(url: str, timeout: int = 45) -> str:
-    """Fetch a SeLoger search page through the DataDome-bypass engine.
-
-    SeLoger is behind DataDome, so a plain requests.get gets a 403 challenge.
-    We solve via 2Captcha (matching proxy + UA) and return the real SPA HTML.
-    Falls back to the Camoufox render if the solve fails.
-    """
-    from french_property_scraper import scrape_via_datadome
-    r = scrape_via_datadome(url, timeout_s=timeout)
-    if r.success and len(r.html) > 3000:
-        return r.html
-    # Fallback: try Camoufox render (free)
-    try:
-        from french_property_scraper import scrape_via_camoufox
-        cr = scrape_via_camoufox(url, timeout_s=timeout, use_proxy=True, warmup=True)
-        if cr.get("success") and len(cr.get("rawHtml", "")) > 3000:
-            return cr["rawHtml"]
-    except Exception:
-        pass
-    raise RuntimeError(f"SeLoger fetch failed: {r.error or 'blocked'}")
-
-
 # ---------------------------------------------------------------------------
 # FNAIM PARSER
 # ---------------------------------------------------------------------------
@@ -402,23 +380,26 @@ def parse_paruvendu(html: str, source_url: str) -> list[dict]:
 # DETAIL PAGE SCANNER — get full listing data from individual ad pages
 # ---------------------------------------------------------------------------
 
-# Single normal import of the scraper module (no importlib / exec_module).
-# The scraper file is `french_property_scraper.py` (underscored) so it
-# imports as a regular package module.
-from french_property_scraper import (
-    extract_property_data,
-    WarpSession,
-    scrape_via_lightpanda,
-    scrape_via_stealth,
-    is_cloudflare_block,
-)
-
+# NOTE: the heavy `french_property_scraper` module is imported LAZILY inside
+# scan_detail_page() — it pulls in DataDome/2Captcha/stealth engines that are
+# only needed for detail-page extraction.  Keeping the import out of module
+# scope means the common ladder path (search-card parsing + DB upsert) never
+# pays that load cost.
 
 def scan_detail_page(url: str, source: str, timeout: int = 30) -> dict:
     """
     Fetch and extract data from an individual listing detail page.
     Returns the enriched extract_property_data() result plus source info.
     """
+    # Lazy import: the scraper module is heavy (DataDome/2Captcha/stealth
+    # engines) and only needed when detail extraction actually runs.
+    from french_property_scraper import (
+        extract_property_data,
+        WarpSession,
+        scrape_via_lightpanda,
+        scrape_via_stealth,
+    )
+
     html = ""
     engine_used = "direct"
 
@@ -507,23 +488,12 @@ def is_cloudflare_block(html: str, status: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# SELOGER PARSER (multi-listing from search result page)
+# SELOGER PRICE HELPER
 # ---------------------------------------------------------------------------
-# SeLoger is a JS SPA: the search page is rendered by Camoufox (or fetched
-# with a solved DataDome cookie) into real HTML.  Each listing is a card:
-#
-#   <div data-testid="classified-card-mfe-<CARD_ID>">
-#     <a data-testid="card-mfe-covering-link-testid" href=".../detail.htm">
-#     <div data-testid="cardmfe-price-testid">465 000 €</div>
-#     <div data-testid="card-mfe-energy-performance-class">E</div>
-#     <div data-testid="cardmfe-keyfacts-testid">461 m²</div>
-#     <div data-testid="cardmfe-description-box-address">Château-Thierry (02400)</div>
-#     <div data-testid="cardmfe-description-text-testid">Immeuble à vendre...</div>
-#     <div data-testid="cardmfe-agency-publisher-*-test-id">CANDAT IMMOBILIER</div>
-#   </div>
-#
-# We parse each card into the SAME dict shape as the other parsers so the
-# consolidated listings / DB pipeline is source-agnostic.
+# The DOM card parsers (parse_seloger / parse_ufrn) were removed — SeLoger
+# is scraped via the BFF API in seloger_api_sweep.py.  This helper remains
+# because both seloger_api_sweep.py and the old standalone scripts use it
+# to normalise SeLoger price strings ("465 000 €" / "465 000 €").
 
 # Price text: "465 000 €" or "1 009 €/m²" (narrow no-break space \u202f / \u00a0)
 _SELOGER_PRICE_RE = re.compile(
@@ -535,298 +505,14 @@ def _clean_seloger_price(raw: str) -> int | None:
     if not raw:
         return None
     s = raw.replace("\u202f", "").replace("\u00a0", "").replace(" ", "").replace(",", ".")
+    # strip any trailing currency / suffix (€, EUR) that callers may include
+    s = s.rstrip("€EUReur ")
     try:
         return int(float(s))
     except (ValueError, TypeError):
         return None
 
 
-def parse_seloger(html: str, source_url: str = "") -> list[dict]:
-    """Parse a SeLoger search result page → list of property dicts.
-
-    Handles the SPA-rendered card markup (data-testid selectors).  Skips
-    promoted/partner cards that lack a real detail URL.  Returns [] if the
-    page is a challenge stub (DataDome / no cards).
-    """
-    if not html or len(html) < 3000:
-        return []
-    low = html.lower()
-    if any(b in low for b in ("geochallenge", "captcha-delivery", "prouvez que",
-                              "just a moment", "cf-chl-integrity")):
-        return []  # challenge stub — no listings
-
-    try:
-        from lxml import html as _lhtml
-        tree = _lhtml.fromstring(html)
-    except Exception:
-        return []
-
-    cards = tree.cssselect('[data-testid^="classified-card-mfe-"]')
-    results = []
-    seen = set()
-
-    for card in cards:
-        # --- URL (skip partner/promoted cards with wl-cdp links) ---
-        link = card.cssselect('[data-testid="card-mfe-covering-link-testid"]')
-        href = link[0].get("href") if link else None
-        if not href or "detail.htm" not in href:
-            continue
-        if not href.startswith("http"):
-            href = "https://www.seloger.com" + href
-        if href in seen:
-            continue
-        seen.add(href)
-
-        # --- Price ---
-        price = None
-        pe = card.cssselect('[data-testid="cardmfe-price-testid"]')
-        if pe:
-            txt = " ".join(pe[0].itertext()).strip()
-            pm = _SELOGER_PRICE_RE.search(txt)
-            if pm:
-                price = _clean_seloger_price(pm.group(1))
-
-        # --- Surface (keyfacts: "461 m²") ---
-        surface = None
-        kf = card.cssselect('[data-testid="cardmfe-keyfacts-testid"]')
-        if kf:
-            ktxt = " ".join(kf[0].itertext()).strip()
-            sm = re.search(r"(\d+)\s*m²", ktxt, re.I)
-            if sm:
-                try:
-                    surface = int(sm.group(1))
-                except ValueError:
-                    pass
-
-        # --- DPE energy ---
-        dpe = None
-        de = card.cssselect('[data-testid="card-mfe-energy-performance-class"]')
-        if de:
-            dtxt = " ".join(de[0].itertext()).strip()
-            dm = re.search(r"\b([A-G])\b", dtxt)
-            if dm:
-                dpe = dm.group(1).upper()
-
-        # --- Location / address ---
-        location = None
-        le = card.cssselect('[data-testid="cardmfe-description-box-address"]')
-        if le:
-            location = " ".join(le[0].itertext()).strip()[:200]
-
-        # --- Title / description ---
-        title = ""
-        te = card.cssselect('[data-testid="cardmfe-description-text-testid"]')
-        if te:
-            title = " ".join(te[0].itertext()).strip()[:250]
-
-        # --- Agency ---
-        agency = None
-        ae = card.cssselect('[data-testid^="cardmfe-agency-publisher-"]')
-        if ae:
-            agency = " ".join(ae[0].itertext()).strip()[:120] or None
-
-        # --- Card id from container testid ---
-        card_id = None
-        tid = card.get("data-testid") or ""
-        if tid.startswith("classified-card-mfe-"):
-            card_id = tid.replace("classified-card-mfe-", "")
-
-        results.append({
-            "source": "seloger",
-            "url": href,
-            "title": title,
-            "price_eur": price,
-            "surface_m2": surface,
-            "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
-            "dpe_energy": dpe,
-            "location": location,
-            "agency": agency,
-            "ref": card_id,
-            "raw_title": title,
-            "parsed_at": datetime.now(timezone.utc).isoformat(),
-            "source_page": source_url,
-        })
-
-    return results
-
-
-def parse_ufrn(html: str, source_url: str = "") -> list[dict]:
-    """Parse a SeLoger SERP page via its embedded JSON state (the CORRECT way).
-
-    SeLoger's micro-frontend embeds the full search state as JSON in the
-    initial HTML (no browser rendering needed):
-      - window["__UFRN_FETCHER__"] = JSON.parse("...") → cards + pagination
-      - window["__UFRN_STORE__"]   = JSON.parse("...") → app/filter state
-
-    Cards live at:
-      data.classified-serp-init-data.pageProps.classifiedsData.<CARD_ID>
-    each with id/location/hardFacts/energyClass/url/type/tags/...
-    Pagination: pageProps.page, pageProps.totalCount.
-
-    Falls back to parse_seloger (DOM) if the JSON isn't present.
-    Returns the same dict shape as parse_seloger.
-    """
-    if not html or len(html) < 3000:
-        return []
-    low = html.lower()
-    if any(b in low for b in ("geochallenge", "captcha-delivery", "prouvez que",
-                              "just a moment", "cf-chl-integrity")):
-        return []
-
-    page_props = None
-    m = re.search(r'window\["__UFRN_FETCHER__"\]\s*=\s*JSON\.parse\("(.+?)"\);',
-                  html, re.DOTALL)
-    if m:
-        try:
-            raw = m.group(1).encode("utf-8").decode("unicode_escape")
-            d = json.loads(raw)
-            page_props = (d.get("data", {})
-                           .get("classified-serp-init-data", {})
-                           .get("pageProps", {}))
-        except Exception:
-            page_props = None
-
-    if not page_props:
-        # structured JSON missing → fall back to DOM parsing
-        return parse_seloger(html, source_url)
-
-    # Normalise: classifieds is the REAL per-page search results list (30),
-    # suggestedClassifieds (4) repeat across pages. classifiedsData is the
-    # union keyed by id — use classifieds first, exclude suggested ids.
-    classifieds = page_props.get("classifieds") or []
-    suggested = page_props.get("suggestedClassifieds") or []
-    suggested_ids = set()
-    for s in suggested:
-        if isinstance(s, dict) and s.get("id"):
-            suggested_ids.add(s["id"])
-        elif isinstance(s, str):
-            suggested_ids.add(s)
-    cards_dict = {}
-    if isinstance(classifieds, list):
-        for c in classifieds:
-            if isinstance(c, dict) and c.get("id") and c["id"] not in suggested_ids:
-                cards_dict[c["id"]] = c
-    elif isinstance(classifieds, dict):
-        cards_dict = {k: v for k, v in classifieds.items()
-                      if k not in suggested_ids}
-    if not cards_dict:
-        # fallback: classifiedsData (full union) minus suggested ids
-        cdata = page_props.get("classifiedsData") or {}
-        if isinstance(cdata, dict):
-            cards_dict = {k: v for k, v in cdata.items() if k not in suggested_ids}
-        elif isinstance(cdata, list):
-            for c in cdata:
-                if isinstance(c, dict) and c.get("id") and c["id"] not in suggested_ids:
-                    cards_dict[c["id"]] = c
-
-    results = []
-    seen = set()
-    for cid, card in cards_dict.items():
-        if not isinstance(card, dict):
-            continue
-        url = card.get("url") or ""
-        if isinstance(url, dict):
-            url = url.get("seoUrl") or url.get("href") or ""
-        if url and not url.startswith("http"):
-            url = "https://www.seloger.com" + url
-        if url and url in seen:
-            continue
-        if url:
-            seen.add(url)
-
-        # price / surface from hardFacts
-        price = surface = None
-        hf = card.get("hardFacts") or {}
-        if isinstance(hf, dict):
-            price = hf.get("price") or hf.get("priceValue") or hf.get("mainPrice")
-            if price is None:
-                for v in hf.values():
-                    if isinstance(v, dict) and (v.get("price") is not None or v.get("value") is not None):
-                        price = v.get("price") or v.get("value"); break
-            surface = hf.get("livingArea") or hf.get("area") or hf.get("surface")
-            if surface is None:
-                # hardFacts.facts is a list: [{"type":"overallSpace","value":"461 m²"},...]
-                for f in hf.get("facts") or []:
-                    if isinstance(f, dict):
-                        ftype = str(f.get("type") or "").lower()
-                        if any(x in ftype for x in ("space", "surface", "area", "size", "living")):
-                            surface = f.get("splitValue") or f.get("value")
-                            break
-                if surface is None:
-                    for v in hf.values():
-                        if isinstance(v, dict) and v.get("livingArea") is not None:
-                            surface = v["livingArea"]; break
-            # dict-coerce: price may be {"value": "...", "ariaLabel": "465000 €"}
-            if isinstance(price, dict):
-                price = price.get("ariaLabel") or price.get("value") or price.get("formatted")
-            if isinstance(surface, dict):
-                surface = surface.get("value") or surface.get("ariaLabel")
-            # number-coerce
-            if isinstance(price, str):
-                pm = re.search(r"[\d\s]{4,}", price)
-                price = _clean_seloger_price(pm.group(0)) if pm else None
-            if isinstance(surface, str):
-                sm = re.search(r"(\d+)", surface)
-                surface = int(sm.group(1)) if sm else None
-            # sanity: a real immeuble is never <10 m² — drop bogus values
-            if surface is not None and surface < 10:
-                surface = None
-
-        # location
-        location = None
-        loc = card.get("location") or {}
-        if isinstance(loc, dict):
-            location = (loc.get("label") or loc.get("city") or loc.get("name")
-                        or loc.get("displayName"))
-            if isinstance(location, dict):
-                location = location.get("label") or str(location)
-
-        # DPE
-        dpe = card.get("energyClass")
-        disp = card.get("display")
-        if dpe is None and isinstance(disp, dict):
-            dpe = disp.get("energy")
-        if isinstance(dpe, dict):
-            dpe = dpe.get("value")
-        if dpe and isinstance(dpe, str):
-            dm = re.search(r"\b([A-G])\b", dpe)
-            dpe = dm.group(1).upper() if dm else None
-
-        # title / description
-        title = ""
-        md = card.get("mainDescription") or card.get("description") or ""
-        if isinstance(md, dict):
-            title = md.get("text") or md.get("title") or ""
-        elif isinstance(md, str):
-            title = md
-        title = str(title).strip()[:250]
-
-        # agency
-        agency = None
-        prov = card.get("provider") or card.get("cardProvider") or {}
-        if isinstance(prov, dict):
-            agency = prov.get("title") or prov.get("name")
-
-        results.append({
-            "source": "seloger",
-            "url": url,
-            "title": title,
-            "price_eur": price,
-            "surface_m2": surface,
-            "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
-            "dpe_energy": dpe,
-            "location": location,
-            "agency": agency,
-            "ref": cid,
-            "raw_title": title,
-            "parsed_at": datetime.now(timezone.utc).isoformat(),
-            "source_page": source_url,
-        })
-
-    return results
-
-
-# ---------------------------------------------------------------------------
 # LADDER — crawl FNAIM + IAD + ParuVendu in sequence
 # ---------------------------------------------------------------------------
 
@@ -834,14 +520,16 @@ PARSERS = {
     "fnaim": parse_fnaim,
     "iad": parse_iad,
     "paruvendu": parse_paruvendu,
-    "seloger": parse_ufrn,   # UFRN JSON extraction (falls back to DOM)
+    # NOTE: SeLoger is intentionally NOT wired into the ladder.  It is a JS
+    # SPA behind DataDome; the definitive path is seloger_api_sweep.py
+    # (BFF API).  parse_seloger / parse_ufrn below are kept for standalone
+    # scripts but must NOT be run through the ladder's plain-HTTP fetch.
 }
 
 SOURCE_URLS = {
     "fnaim": "https://www.fnaim.fr/liste-annonces-immobilieres/17-acheter-immeuble-aisne-02.htm",
     "iad": "https://www.iadfrance.fr/annonces/aisne-02/vente/immeuble",
     "paruvendu": "https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/",
-    "seloger": "https://www.seloger.com/recherche/achat/immeuble/hauts-de-france/aisne-02/ad06fr2",
 }
 
 OUTPUT_DIR = Path("/workspace/hermes1/projects/aisne-property-search/scans")
@@ -861,7 +549,7 @@ def ladder(
     Returns dict with per-source results and consolidated listings.
     """
     if sources is None:
-        sources = ["fnaim", "iad", "paruvendu", "seloger"]
+        sources = ["fnaim", "iad", "paruvendu"]
     if scan_details_for is None:
         scan_details_for = []
 
@@ -888,10 +576,7 @@ def ladder(
         t0 = time.time()
 
         try:
-            if source == "seloger":
-                html = fetch_seloger(url, timeout=45)
-            else:
-                html = fetch(url, timeout=30)
+            html = fetch(url, timeout=30)
             parser = PARSERS.get(source)
             if not parser:
                 log_lines.append(f"  ✗ No parser for {source}")
@@ -1048,8 +733,8 @@ if __name__ == "__main__":
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    # Per-source commands
-    for src in ["fnaim", "iad", "paruvendu", "seloger"]:
+    # Per-source commands (SeLoger excluded — use seloger_api_sweep.py)
+    for src in ["fnaim", "iad", "paruvendu"]:
         sp = subparsers.add_parser(src, help=f"Parse {src} search page")
         sp.add_argument("--url", help="Override default URL")
         sp.add_argument("--max", type=int, default=200, help="Max listings to extract")
@@ -1071,17 +756,14 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
-    if args.command in ("fnaim", "iad", "paruvendu", "seloger"):
+    if args.command in ("fnaim", "iad", "paruvendu"):
         src = args.command
         url = args.url or SOURCE_URLS.get(src)
         if not url:
             print(f"No URL for {src}"); sys.exit(1)
 
         print(f"Fetching {src}: {url} ...")
-        if src == "seloger":
-            html = fetch_seloger(url)
-        else:
-            html = fetch(url)
+        html = fetch(url)
         parser = PARSERS[src]
         listings = parser(html, url)
 

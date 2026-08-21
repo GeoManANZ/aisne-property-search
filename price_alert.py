@@ -20,19 +20,20 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Ensure the project dir (with listings_db.py) is importable regardless of CWD.
-_PROJECT_DIR = Path(__file__).resolve().parent
-if _PROJECT_DIR.name == "scripts":
-    # running from cron scripts copy — listings_db lives in the project dir
-    _PROJECT_DIR = Path("/workspace/hermes1/projects/aisne-property-search")
+# Resolve the project dir (where listings_db.py lives) regardless of CWD or
+# the cron-run copy location.  Two candidates:
+#   1. this file's own directory (normal runs)
+#   2. the canonical project path (when run from the /opt/data/scripts copy)
+_CANDIDATES = [
+    Path(__file__).resolve().parent,
+    Path("/workspace/hermes1/projects/aisne-property-search"),
+]
+_PROJECT_DIR = next((p for p in _CANDIDATES if (p / "listings_db.py").exists()),
+                    _CANDIDATES[0])
 if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 
 from listings_db import ListingsDB
-
-
-def format_eur(v: int | None) -> str:
-    return f"{v:,.0f} €".replace(",", " ") if v else "?"
 
 
 def load_db():
