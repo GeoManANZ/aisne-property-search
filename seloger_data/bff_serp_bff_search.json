@@ -1,5 +1,0 @@
-{
-  "message": "Cannot GET /serp-bff/search?project=2&wellType=immeuble&departmentCode=02&page=1",
-  "error": "Not Found",
-  "statusCode": 404
-}
