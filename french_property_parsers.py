@@ -115,9 +115,11 @@ def parse_fnaim(html: str, source_url: str) -> list[dict]:
                 pass
 
         # Location: data-title often has "TOWN NNNNN" at the end
-        # e.g. "Immeuble  94m² HIRSON 02500" → "HIRSON 02500"
+        # e.g. "Immeuble  94m² HIRSON 02500" → "HIRSON (02500)"
         location = None
-        lm = re.search(r"([A-ZÀ-Ý][\wÀ-ÿ'\- ]+?)\s+(\d{5})\s*$", title)
+        # town = the LAST uppercase-alpha token sequence before the postcode,
+        # excluding the surface (which contains digits/²)
+        lm = re.search(r"\b([A-ZÀ-Ý][\wÀ-ÿ'\-]*(?:\s+[A-ZÀ-Ý][\wÀ-ÿ'\-]*)*)\s+(\d{5})\s*$", title)
         if lm:
             location = f"{lm.group(1).strip()} ({lm.group(2)})"
 
@@ -195,13 +197,38 @@ def parse_iad(html: str, source_url: str) -> list[dict]:
                 loc = parts[-1] if len(parts) > 1 else parts[0]
                 title = loc[:120]
 
+        # Location + surface from the URL slug:
+        #   /annonce/immeuble-vente-<town>-<NNN>m2/r<id>
+        location = None
+        surface = None
+        um = re.search(r"/immeuble-vente-([a-z0-9\-]+?)(?:-(\d+))?m2/", href)
+        if um:
+            town_slug = um.group(1).replace("-", " ").strip()
+            if town_slug:
+                location = town_slug.title()
+            if um.group(2):
+                try:
+                    surface = int(um.group(2))
+                except ValueError:
+                    pass
+
+        # Description: look for a meta description or og:description
+        description = ""
+        dm = re.search(r'<meta[^>]*name="description"[^>]*content="([^"]+)"', inner_html, re.IGNORECASE)
+        if not dm:
+            dm = re.search(r'<p[^>]*class="[^"]*description[^"]*"[^>]*>(.*?)</p>', inner_html, re.DOTALL | re.IGNORECASE)
+        if dm:
+            description = re.sub(r"<[^>]+>", " ", dm.group(1)).strip()
+
         results.append({
             "source": "iad",
             "url": full_url,
             "title": title[:200],
             "price_eur": price,
-            "surface_m2": None,  # IAD search pages rarely show surface in raw HTML
-            "price_per_m2": None,
+            "surface_m2": surface,
+            "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
+            "location": location,
+            "description": description,
             "raw_title": title,
             "parsed_at": datetime.now(timezone.utc).isoformat(),
             "source_page": source_url,
