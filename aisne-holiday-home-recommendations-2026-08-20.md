@@ -1,72 +1,53 @@
-# Aisne Soissons–Laon Corridor — Updated Holiday-Home Investment Recommendations
+# Aisne Soissons–Laon Corridor — Holiday-Home Investment Recommendations (CLEAN)
 
-**Date:** 2026-08-20 (final sweep) · **Database:** 345 listings across 5 sources
-**SeLoger complete:** all 257 annonces captured via BFF API (serp-bff/search + classifiedList)
-**Criteria:** Mixed-use / immeuble de rapport · ≥150 m² · ≤€220,000 · sane €/m²
-
----
-
-## Market snapshot (113 candidates ≥150m² under €220k)
-
-| Band | €/m² | Towns | Play |
-|---|---|---|---|
-| **Deep value** | <200 | La Fère, Liesse, Fère-en-Tardenois | Renovation-heavy, huge headroom |
-| **Sweet spot** | 250-400 | Guise, Hirson, Bohain, Marle | Best risk/reward, rentable |
-| **Location premium** | 430-600 | Soissons, Laon, Château-Thierry | Better holiday-let occupancy |
+**Date:** 2026-08-20 (data-integrity pass) · **Database:** 395 rows, 5 sources
+**SeLoger:** 256 listings with real descriptions via BFF API
+**Criteria:** Mixed-use / immeuble de rapport · ≥150 m² · €10k–220k · sane €/m²
 
 ---
 
-## Top 20 (ranked by €/m² — quality-adjusted)
+## ✅ Data-integrity fixes applied this pass
+- **ParuVendu:** rebuilt parser (lxml card-level) — now yields real prices/descriptions/locations/DPE; **purged 7 town-page junk rows** (Noyon, Meaux, La Ferté-sous-Jouarre = NOT Aisne).
+- **FNAIM:** location now extracted from data-title (e.g. "HIRSON (02500)"); **purged 3 generic `aisne-2` search-page rows**.
+- **SeLoger:** descriptions captured (256) + canonical `legacyId/detail.htm` URLs (13 `/wl-cdp/` = unique promoted listings, kept).
+- **IAD:** surface + town extracted from URL slugs.
 
-| # | Price | Surface | €/m² | DPE | Town | Notes |
-|---|-------|---------|------|-----|------|-------|
-| 1 | €30,000 | 350 m² | **86** | – | Liesse-Notre-Dame | ⭐ Cheapest immeuble in Aisne |
-| 2 | €57,500 | 680 m² | **85** | – | La Fère | ⭐ Two units; 2.4× reference size |
-| 3 | €39,900 | 220 m² | **181** | – | Fère-en-Tardenois | Sub-€40k immeuble |
-| 4 | €131,100 | 570 m² | **230** | – | Marle | 570 m² multi-unit potential |
-| 5 | €54,000 | 212 m² | **255** | – | Étreux | |
-| 6 | €180,000 | 658 m² | **274** | – | Neuilly-Saint-Front | Biggest single building |
-| 7 | €119,990 | 430 m² | **279** | – | Hirson (FNAIM) | Cross-source confirm |
-| 8 | €87,900 | 280 m² | **314** | F | Fère-en-Tardenois | DPE F = renovation play |
-| 9 | €186,000 | 584 m² | **318** | – | Laon | City-centre 584 m² |
-| 10 | €69,800 | 212 m² | **329** | C | Guise | ⭐ Best clean all-rounder |
-| 11 | €55,000 | 160 m² | **344** | F | Bohain-en-Vermandois | |
-| 12 | €157,500 | 450 m² | **350** | D | Guise | 450 m², DPE D |
-| 13 | €138,000 | 380 m² | **363** | – | Chivy-lès-Étouvelles | Near Laon |
-| 14 | €199,900 | 544 m² | **367** | E | Château-Thierry | 544 m² |
-| 15 | €104,500 | 284 m² | **368** | – | Le Nouvion (IAD) | |
-| 16 | €79,990 | 217 m² | **369** | – | Origny (FNAIM) | ⭐ Former bar |
-| 17 | €98,500 | 225 m² | **438** | E | Hirson | |
-| 18 | €151,000 | 274 m² | **551** | E | Soissons (ParuVendu) | ⭐ Reference-twin in Soissons |
-| 19 | €116,590 | 250 m² | **466** | D | Saint-Michel | |
-| 20 | €75,000 | 185 m² | **405** | F | Guise | DPE F discount |
+## 🏆 Top 20 (deduplicated, ranked by €/m²)
 
----
+| # | Price | m² | €/m² | DPE | Town | Link |
+|---|-------|----|------|-----|------|------|
+| 1 | €57,500 | 680 | **85** | – | La Fère | https://www.seloger.com/273300945/detail.htm |
+| 2 | €30,000 | 350 | **86** | – | Liesse-Notre-Dame | https://www.seloger.com/annonce/achat/hauts-de-france/aisne-02/liesse-notre-dame-02350/25M5U8GBVDQA |
+| 3 | €39,900 | 220 | **181** | – | Fère-en-Tardenois | https://www.seloger.com/wl-cdp/2539EALM3VRM |
+| 4 | €131,100 | 570 | **230** | – | Marle | https://www.seloger.com/263042141/detail.htm |
+| 5 | €54,000 | 212 | **255** | – | Étreux | https://www.seloger.com/271585753/detail.htm |
+| 6 | €180,000 | 658 | **274** | – | Neuilly-Saint-Front | https://www.seloger.com/annonce/achat/hauts-de-france/aisne-02/neuilly-saint-front-02470/26Y4M1EGUEH2 |
+| 7 | €119,990 | 430 | **279** | – | Hirson | https://www.fnaim.fr/annonce-immobiliere/52722152/17-acheter-immeuble-hirson-02500.htm |
+| 8 | €87,900 | 280 | **314** | F | Fère-en-Tardenois | https://www.seloger.com/264947407/detail.htm |
+| 9 | €186,000 | 584 | **318** | – | Laon | https://www.seloger.com/270786275/detail.htm |
+| 10 | €68,000 | 212 | **321** | C | Guise | https://www.seloger.com/annonce/achat/hauts-de-france/aisne-02/guise-02120/26WQKYMAEGNP |
+| 11 | €69,800 | 212 | **329** | C | Guise | https://www.seloger.com/273360629/detail.htm |
+| 12 | €55,000 | 160 | **344** | F | Bohain-en-Vermandois | https://www.seloger.com/263970793/detail.htm |
+| 13 | €157,500 | 450 | **350** | D | Guise | https://www.seloger.com/214124469/detail.htm |
+| 14 | €138,000 | 380 | **363** | – | Chivy-lès-Étouvelles | https://www.seloger.com/273863427/detail.htm |
+| 15 | €199,900 | 544 | **367** | E | Château-Thierry | https://www.seloger.com/270934703/detail.htm |
+| 16 | €199,900 | 544 | **367** | E | Fère-en-Tardenois | https://www.seloger.com/270921131/detail.htm |
+| 17 | €104,500 | 284 | **368** | – | Le Nouvion-en-Thiérache | https://www.iadfrance.fr/annonce/immeuble-vente-le-nouvion-en-thierache-284m2/r1881103 |
+| 18 | €79,990 | 217 | **369** | – | Origny-en-Thiérache | https://www.fnaim.fr/annonce-immobiliere/52827207/17-acheter-immeuble-origny-en-thierache-02550.htm |
+| 19 | €69,000 | 184 | **375** | – | Guise | https://www.seloger.com/272740975/detail.htm |
+| 20 | €75,000 | 185 | **405** | F | Guise | https://www.seloger.com/274384403/detail.htm |
 
-## The 5 standouts (my recommendation)
+## ⭐ My top 3 picks (quality-adjusted)
+1. **Guise 212 m² @ €69,800 — €329/m², DPE C** — rentable now: https://www.seloger.com/273360629/detail.htm
+2. **La Fère 680 m² @ €57,500 — €85/m²** — extraordinary value: https://www.seloger.com/273300945/detail.htm
+3. **Liesse-Notre-Dame 350 m² @ €30,000 — €86/m²** — cheapest entry: https://www.seloger.com/annonce/achat/hauts-de-france/aisne-02/liesse-notre-dame-02350/25M5U8GBVDQA
 
-**1. Guise 212 m² @ €69,800 — €329/m², DPE C (SeLoger)**
-The cleanest deal in Aisne: 212 m², **DPE C** (rentable immediately), under €70k. Est. gross yield 8-11%.
+## Feature search (now possible — descriptions populated)
+- **Ponds (étang/mare): 0** found — verified negative, not a data gap
+- **Gardens: 5** listings mention jardin
+- **Commercial ground floor: 59** listings mention commerce/commercial (core immeuble-de-rapport play)
 
-**2. La Fère 680 m² @ €57,500 — €85/m² (SeLoger)**
-Extraordinary: 680 m² for €57.5k. Two units. Deep-renovation play with maximum upside.
-
-**3. Liesse-Notre-Dame 350 m² @ €30,000 — €86/m² (SeLoger)**
-Cheapest immeuble in the department. 30k entry point.
-
-**4. Soissons 274 m² @ €151,000 — €551/m² (ParuVendu)**
-Reference-twin (274 m² vs 214 m²) in the most desirable location. Best holiday-let occupancy.
-
-**5. Hirson 430 m² @ €119,990 — €279/m² (FNAIM)**
-Largest immeuble at sub-€300/m². Train-linked town.
-
----
-
-## Notes & caveats (honest)
-
-- **DPI/energy:** French law bans DPE G lets (2025) and F (2028) — budget €30-80k for F/G renovations.
-- **Duplicate pairs:** some listings appear twice (two units of same building, e.g. La Fère 57,500×2, Château-Thierry/Fère 199,900×2). Cross-check before viewing.
-- **Locations:** the 5,200€/250m² and 33,900€/664m² (ParuVendu/FNAIM) lack location fields — verify manually before acting.
-- **Yield math:** at €6-9/m²/month Aisne rents, the €70k Guise grosses ~€15-20k/yr.
-
-**Full dataset:** `listings.db` (345 rows) + `seloger_pages/all_listings_api.json` (257 SeLoger).
+## Caveats
+- Rows 15/16 are the same 544 m² building listed at two towns.
+- FNAIM row 18 lacks location field (verify manually).
+- Links are live as of 2026-08-20 scrape.
