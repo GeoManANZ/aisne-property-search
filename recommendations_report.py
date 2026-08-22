@@ -18,10 +18,12 @@ if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 
 from listings_db import ListingsDB
+import config
 
-MIN_SURFACE = 150
-PRICE_MIN = 10_000
-PRICE_MAX = 220_000
+MIN_SURFACE = config.INVESTMENT["min_surface_m2"]
+PRICE_MIN = config.INVESTMENT["price_min_eur"]
+PRICE_MAX = config.INVESTMENT["price_max_eur"]
+TOP_N = config.INVESTMENT["top_n"]
 
 
 def fetch_candidates(db, min_surface=MIN_SURFACE, price_min=PRICE_MIN,
@@ -80,7 +82,7 @@ def render_markdown(cands, n: int, title: str = None) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--n", type=int, default=20)
+    ap.add_argument("--n", type=int, default=TOP_N)
     ap.add_argument("--out", default=None, help="Write Markdown to file")
     ap.add_argument("--title", default=None)
     args = ap.parse_args()

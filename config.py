@@ -34,6 +34,31 @@ DEPARTMENTS = [
 ]
 DEFAULT_DEPARTMENT = DEPARTMENTS[0]
 
+# ---------------------------------------------------------------------------
+# Investment criteria — the report/alert filter layer
+# ---------------------------------------------------------------------------
+# Used by recommendations_report.py (candidate selection) and any ranking.
+# Amend here; every consumer picks it up automatically.
+INVESTMENT = {
+    "min_surface_m2": 150,      # minimum habitable surface
+    "price_min_eur": 10_000,    # ignore below (junk/parts listings)
+    "price_max_eur": 220_000,   # budget ceiling
+    "rank_by": "price_per_m2",  # 'price_per_m2' (asc) is the only mode for now
+    "top_n": 20,                # default report size
+}
+
+# ---------------------------------------------------------------------------
+# Price-alert guards
+# ---------------------------------------------------------------------------
+# A drop is reported only if it passes ALL of these (false-positive defence,
+# see LEARNINGS.md §9):
+PRICE_ALERT = {
+    "days_window": 30,          # compare against prices seen in the last N days
+    "min_pct": 0.0,             # minimum drop % to report (0 = any real drop)
+    "price_floor_eur": 10_000,  # implausible-below guard
+    "price_ceiling_eur": 50_000_000,  # malformed-above guard
+}
+
 
 def seloger_serp_url(dep: dict | None = None) -> str:
     """SeLoger SERP URL for a department."""

@@ -40,10 +40,11 @@ def load_db():
     return ListingsDB(_PROJECT_DIR / "listings.db")
 
 
-def get_real_drops(db, days: int = 30, min_pct: float = 0.0) -> list[dict]:
+def get_real_drops(db, days: int = None, min_pct: float = None) -> list[dict]:
     """Return genuine price drops, filtering parser artifacts.
 
-    A drop is "real" only if it meets ALL of:
+    Defaults for `days`/`min_pct` come from config.PRICE_ALERT.  A drop is
+    "real" only if it meets ALL of:
       - old_price is plausible (5k–50M)
       - new_price is plausible (>=10k, <=50M) — below €10k is a parse artifact
       - the CURRENT listings table price matches the new_price (i.e. the drop
@@ -55,6 +56,13 @@ def get_real_drops(db, days: int = 30, min_pct: float = 0.0) -> list[dict]:
     figure. If the detail-scan or a bad parse briefly logged a wrong value,
     the current price won't match it and the drop is discarded.
     """
+    import config
+    if days is None:
+        days = config.PRICE_ALERT["days_window"]
+    if min_pct is None:
+        min_pct = config.PRICE_ALERT["min_pct"]
+    floor = config.PRICE_ALERT["price_floor_eur"]
+    ceiling = config.PRICE_ALERT["price_ceiling_eur"]
     drops = db.price_drops(days)
     # map url -> current price in the listings table
     cur = {r[0]: r[1] for r in db.conn.execute(
@@ -65,7 +73,7 @@ def get_real_drops(db, days: int = 30, min_pct: float = 0.0) -> list[dict]:
         if old is None or new is None:
             continue
         # plausible old price, plausible new price
-        if not (5000 <= old <= 50_000_000) or not (10000 <= new <= 50_000_000):
+        if not (5000 <= old <= ceiling) or not (floor <= new <= ceiling):
             continue
         # CORROBORATION: current DB price must equal the new (lower) price.
         # Otherwise this "drop" is a transient/artifact and must be ignored.
@@ -105,9 +113,10 @@ def format_alert(drops: list[dict]) -> str:
 
 
 def main():
+    import config
     ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=30)
-    ap.add_argument("--min-pct", type=float, default=0.0,
+    ap.add_argument("--days", type=int, default=config.PRICE_ALERT["days_window"])
+    ap.add_argument("--min-pct", type=float, default=config.PRICE_ALERT["min_pct"],
                     help="Only report drops >= this % (default: all)")
     ap.add_argument("--out", default=None, help="Write message to file (for delivery)")
     ap.add_argument("--json", action="store_true", help="Print JSON drops instead of text")
