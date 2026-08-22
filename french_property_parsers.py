@@ -17,6 +17,7 @@ import sys
 import time
 import hashlib
 from datetime import datetime, timezone
+from html import unescape as html_unescape
 from pathlib import Path
 from typing import Optional
 
@@ -522,6 +523,76 @@ def _clean_seloger_price(raw: str) -> int | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# LESITEIMMO PARSER — JSON-LD structured data (added 2026-08-22)
+# ---------------------------------------------------------------------------
+# lesiteimmo.com serves clean JSON-LD RealEstateListing blocks on every
+# search page (plain HTML, no anti-bot, no JS requirement).  Cards carry
+# name/description/price/surface/town/postcode/agency/photos.  Pagination
+# is ?page=N (25/page, ~132 for Aisne immeubles).
+
+# Detail URLs: /acheter/immeuble/<town-pc>/<id>  OR  /acheter/maison-Npieces/<town-pc>/<id>
+LSI_LISTING_URL_RE = re.compile(
+    r"^https://www\.lesiteimmo\.com/acheter/(?:immeuble|maison(?:-\d+pieces)?)/[^/]+/\d{6,9}$")
+
+
+def parse_lesiteimmo(html: str, source_url: str) -> list[dict]:
+    """Parse a lesiteimmo.com search page → property dicts via JSON-LD."""
+    results = []
+    lds = re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, re.S)
+    for block in lds:
+        try:
+            data = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(data, dict) or data.get("@type") != "CollectionPage":
+            continue
+        items = (data.get("mainEntity") or {}).get("itemListElement") or []
+        for el in items:
+            item = el.get("item") or {}
+            url = item.get("url")
+            if not url or not LSI_LISTING_URL_RE.match(url):
+                continue  # reject non-detail links at parse level too
+
+            offers = item.get("offers") or {}
+            price = offers.get("price")
+            try:
+                price = int(price) if price is not None else None
+            except (TypeError, ValueError):
+                price = None
+
+            floor = ((item.get("itemOffered") or {}).get("floorSize") or {})
+            surface = floor.get("value")
+            try:
+                surface = float(surface) if surface is not None else None
+            except (TypeError, ValueError):
+                surface = None
+
+            addr = item.get("address") or {}
+            town = addr.get("addressLocality")
+            pc = addr.get("postalCode")
+            location = f"{town} ({pc})" if town and pc else town
+
+            title = html_unescape((item.get("name") or "")).strip()
+            description = re.sub(r"<[^>]+>", " ", html_unescape(item.get("description") or "")).strip()
+            agency = ((item.get("seller") or {}).get("name") or "").strip() or None
+
+            results.append({
+                "source": "lesiteimmo",
+                "url": url,
+                "title": title[:200],
+                "price_eur": price,
+                "surface_m2": surface,
+                "price_per_m2": (price / surface) if (price and surface and surface > 0) else None,
+                "location": location,
+                "description": description[:4000] if description else None,
+                "agency": agency,
+                "parsed_at": datetime.now(timezone.utc).isoformat(),
+                "source_page": source_url,
+            })
+    return results
+
+
 # LADDER — crawl FNAIM + IAD + ParuVendu in sequence
 # ---------------------------------------------------------------------------
 
@@ -529,6 +600,7 @@ PARSERS = {
     "fnaim": parse_fnaim,
     "iad": parse_iad,
     "paruvendu": parse_paruvendu,
+    "lesiteimmo": parse_lesiteimmo,
     # NOTE: SeLoger is intentionally NOT wired into the ladder.  It is a JS
     # SPA behind DataDome; the definitive path is seloger_api_sweep.py
     # (BFF API).  parse_seloger / parse_ufrn below are kept for standalone
@@ -539,7 +611,32 @@ SOURCE_URLS = {
     "fnaim": "https://www.fnaim.fr/liste-annonces-immobilieres/17-acheter-immeuble-aisne-02.htm",
     "iad": "https://www.iadfrance.fr/annonces/aisne-02/vente/immeuble",
     "paruvendu": "https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/",
+    # lesiteimmo splits categories: immeuble (~132) + maison (large) both
+    # contain building-type stock; crawl both.
+    "lesiteimmo": (
+        "https://www.lesiteimmo.com/acheter/immeuble/aisne-02",
+        "https://www.lesiteimmo.com/acheter/maison/aisne-02",
+    ),
 }
+
+def _lsi_town_slugs() -> set[str]:
+    """Distinct lesiteimmo town slugs already known in listings.db."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(OUTPUT_DIR.parent / "listings.db"))
+        rows = conn.execute(
+            "SELECT url FROM listings WHERE source='lesiteimmo'").fetchall()
+        conn.close()
+    except Exception:
+        return set()
+    slugs = set()
+    for (u,) in rows:
+        # .../acheter/<cat>/<town-slug>-<pc>/<id>
+        parts = u.rstrip("/").split("/")
+        if len(parts) >= 2:
+            slugs.add(parts[-2])
+    return slugs
+
 
 OUTPUT_DIR = Path(config.PROJECT_ROOT) / "scans"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -576,35 +673,79 @@ def ladder(
     ]
 
     for source in sources:
-        url = SOURCE_URLS.get(source)
-        if not url:
+        base_urls = SOURCE_URLS.get(source)
+        if not base_urls:
             log_lines.append(f"  ✗ {source}: no URL configured")
             continue
+        if isinstance(base_urls, str):
+            base_urls = (base_urls,)  # normalise single → tuple
 
-        log_lines.append(f"--- [{source}] {url} ---")
+        log_lines.append(f"--- [{source}] {len(base_urls)} start URL(s) ---")
         t0 = time.time()
 
         try:
-            html = fetch(url, timeout=30)
+            # Paginate each start URL: keep fetching while each page yields
+            # fresh URLs and we're under max.  Page 1 uses the bare URL;
+            # page N appends ?page=N (works for lesiteimmo; other sources
+            # stop naturally when a page yields no new URLs).
             parser = PARSERS.get(source)
             if not parser:
                 log_lines.append(f"  ✗ No parser for {source}")
                 continue
 
-            listings = parser(html, url)
-            # Deduplicate within source by URL
+            listings = []
             seen_urls = set()
-            unique = []
-            for l in listings:
-                if l["url"] not in seen_urls:
-                    seen_urls.add(l["url"])
-                    unique.append(l)
-                if len(unique) >= max_listings_per_source:
-                    break
+            for base_url in base_urls:
+                page = 1
+                max_pages = 30  # hard safety stop (lesiteimmo maison has 14+)
+                while page <= max_pages and len(listings) < max_listings_per_source:
+                    url = base_url if page == 1 else f"{base_url}{'&' if '?' in base_url else '?'}page={page}"
+                    html = fetch(url, timeout=30)
+                    page_listings = parser(html, url)
+                    new = 0
+                    for l in page_listings:
+                        if l["url"] not in seen_urls:
+                            seen_urls.add(l["url"])
+                            listings.append(l)
+                            new += 1
+                            if len(listings) >= max_listings_per_source:
+                                break
+                    cat = base_url.rsplit("/", 2)[-2]  # e.g. 'immeuble'/'maison'
+                    log_lines.append(f"  [{cat}] page {page}: {new} new ({len(listings)} total)")
+                    if new == 0:
+                        break  # exhausted this start URL
+                    page += 1
+                    time.sleep(delay_s)
 
-            log_lines.append(f"  Parsed {len(unique)} listings ({len(listings)} raw, {len(seen_urls)} unique URLs)")
+            unique = listings
+
+            # --- TOWN SWEEP (lesiteimmo only) -----------------------------
+            # The department search sometimes omits live listings (stale
+            # index).  Re-crawl per-town pages for every town already known,
+            # which surfaces those stragglers.
+            if source == "lesiteimmo":
+                try:
+                    towns = sorted(_lsi_town_slugs())
+                except Exception:
+                    towns = []
+                log_lines.append(f"  town sweep: {len(towns)} known town slugs")
+                before = len(listings)
+                for slug in towns:
+                    turl = f"https://www.lesiteimmo.com/acheter/maison/{slug}"
+                    try:
+                        thtml = fetch(turl, timeout=30)
+                        for l in parser(thtml, turl):
+                            if l["url"] not in seen_urls:
+                                seen_urls.add(l["url"])
+                                listings.append(l)
+                    except Exception:
+                        continue
+                    time.sleep(delay_s)
+                log_lines.append(f"  town sweep: +{len(listings) - before} extra listings")
+
+            unique = listings
             all_results[source] = {
-                "url": url,
+                "url": ", ".join(base_urls),
                 "listings_count": len(unique),
                 "listings": unique,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -614,13 +755,13 @@ def ladder(
             log_lines.append(f"  Time: {time.time() - t0:.1f}s")
             log_lines.append("")
 
-            # Save raw HTML for this source
+            # Save raw HTML for this source (last page fetched)
             (out_dir / f"{source}_search.html").write_text(html[:10_000_000], encoding="utf-8")
 
         except Exception as e:
             log_lines.append(f"  ✗ Error: {type(e).__name__}: {e}")
             log_lines.append("")
-            all_results[source] = {"error": str(e), "url": url}
+            all_results[source] = {"error": str(e), "url": ", ".join(base_urls)}
 
         time.sleep(delay_s)
 
@@ -743,7 +884,7 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest="command")
 
     # Per-source commands (SeLoger excluded — use seloger_api_sweep.py)
-    for src in ["fnaim", "iad", "paruvendu"]:
+    for src in ["fnaim", "iad", "paruvendu", "lesiteimmo"]:
         sp = subparsers.add_parser(src, help=f"Parse {src} search page")
         sp.add_argument("--url", help="Override default URL")
         sp.add_argument("--max", type=int, default=200, help="Max listings to extract")
@@ -751,8 +892,9 @@ if __name__ == "__main__":
                         help="After parsing search page, scan detail pages for all listings")
 
     # Ladder command
-    lp = subparsers.add_parser("ladder", help="Crawl all 3 sources in sequence")
-    lp.add_argument("--sources", nargs="+", default=["fnaim", "iad", "paruvendu"],
+    lp = subparsers.add_parser("ladder", help="Crawl all sources in sequence")
+    lp.add_argument("--sources", nargs="+",
+                    default=["fnaim", "iad", "paruvendu", "lesiteimmo"],
                     help="Which sources to crawl")
     lp.add_argument("--max", type=int, default=200, help="Max listings per source")
     lp.add_argument("--detail-scan", nargs="?", const="all", default=None,
@@ -765,7 +907,7 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
-    if args.command in ("fnaim", "iad", "paruvendu"):
+    if args.command in ("fnaim", "iad", "paruvendu", "lesiteimmo"):
         src = args.command
         url = args.url or SOURCE_URLS.get(src)
         if not url:

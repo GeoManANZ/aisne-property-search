@@ -47,7 +47,7 @@ _FIELDS = [
 # that don't match (town/category pages, generic search URLs, JS-fragment
 # titles, absurd prices) are the junk that polluted earlier rankings.
 
-_VALID_SOURCES = {"fnaim", "iad", "paruvendu", "seloger", "orpi", "superimmo", "logicimmo"}
+_VALID_SOURCES = {"fnaim", "iad", "paruvendu", "seloger", "orpi", "superimmo", "logicimmo", "lesiteimmo"}
 _VALID_DPE = {"A", "B", "C", "D", "E", "F", "G"}
 
 
@@ -71,6 +71,11 @@ def _url_is_individual(url: str, source: str) -> bool:
     if source == "iad":
         # detail URL: /annonce/immeuble-vente-<town>-<N>m2/r<id>
         return "/annonce/immeuble-vente-" in url
+    if source == "lesiteimmo":
+        import re
+        return bool(re.match(
+            r"^https://www\.lesiteimmo\.com/acheter/(?:immeuble|maison(?:-\d+pieces)?)/[^/]+/\d{6,9}$",
+            url))
     if source == "seloger":
         # canonical detail: /<digits>/detail.htm OR a slug detail URL OR a
         # promoted /wl-cdp/<id> ad (real listings, non-canonical path)
