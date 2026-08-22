@@ -58,7 +58,7 @@ def fetch(url: str, timeout: int = 30) -> str:
 FNAIM_ANNONCE_RE = re.compile(
     r'<a[^>]*href="(/annonce-immobiliere/\d+/[^"]+)"[^>]*class="[^"]*linkAnnonce[^"]*"[^>]*data-title="([^"]*)"[^>]*>',
     re.IGNORECASE)
-FNAIM_PRICE_RE = re.compile(r"(\d{2,3}(?:\.\d{3})*)\s*€", re.IGNORECASE)
+FNAIM_PRICE_RE = re.compile(r"(\d{1,3}(?:[.\s\u00a0\u202f]\d{3})+|\d{4,7})\s*(?:€|&euro;)", re.IGNORECASE)
 FNAIM_SURFACE_RE = re.compile(r"(\d+)\s*m²", re.IGNORECASE)
 FNAIM_LOCATION_RE = re.compile(r"<strong>([^<]+)</strong>", re.IGNORECASE)
 FNAIM_NEXT_PAGE_RE = re.compile(r'href="([^"]*liste-annonces-immobilieres[^"]*page=\d+[^"]*)"', re.IGNORECASE)
@@ -70,7 +70,11 @@ def parse_fnaim(html: str, source_url: str) -> list[dict]:
     Each listing: url, title, price, surface, location, source_url
     """
     results = []
-    for href, data_title in FNAIM_ANNONCE_RE.findall(html):
+    for m in FNAIM_ANNONCE_RE.finditer(html):
+        href, data_title = m.group(1), m.group(2)
+        # The price is NOT inside the <a> tag — it sits in a sibling element
+        # after the link.  Scan the ~3000 chars of card following this match.
+        card_window = html[m.end():m.end() + 3000]
         # data-title attribute contains the listing title + surface
         # (e.g. "Immeuble 215m² BRANCOURT EN LAONNOIS 02320")
         title = data_title.strip()
@@ -86,12 +90,15 @@ def parse_fnaim(html: str, source_url: str) -> list[dict]:
             except ValueError:
                 pass
 
-        # Price: try extract from title first, then from href pattern
+        # Price: try extract from title first, then from the card window
+        # (price element follows the link), then from href pattern.
         price = None
         pm = FNAIM_PRICE_RE.search(title)
+        if not pm:
+            pm = FNAIM_PRICE_RE.search(card_window)
         if pm:
             try:
-                price = int(pm.group(1).replace(".", ""))
+                price = int(re.sub(r"[.\s\u00a0\u202f]", "", pm.group(1)))
             except ValueError:
                 pass
 
@@ -106,7 +113,8 @@ def parse_fnaim(html: str, source_url: str) -> list[dict]:
         else:
             # Fallback: the detail URL slug carries <town>-<postcode>.htm
             # e.g. /annonce-immobiliere/52722152/17-acheter-immeuble-hirson-02500.htm
-            um = re.search(r"/immeuble-(.+?)-(\d{5})\.htm", href)
+            # or   /annonce-immobiliere/50251150/17-acheter-maison-etreux-02510.htm
+            um = re.search(r"/(?:immeuble|maison)-(.+?)-(\d{5})\.htm", href)
             if um:
                 town = um.group(1).replace("-", " ").title()
                 location = f"{town} ({um.group(2)})"
@@ -139,7 +147,9 @@ def parse_fnaim(html: str, source_url: str) -> list[dict]:
 #   Title + price in card header
 
 IAD_LINK_RE = re.compile(r'<a[^>]*href="(/annonce/[^"]+)"[^>]*>(.*?)</a>', re.DOTALL | re.IGNORECASE)
-IAD_CARD_PRICE_RE = re.compile(r"<strong>([\d\s]+)\s*€</strong>", re.IGNORECASE)
+IAD_CARD_PRICE_RE = re.compile(
+    r"(?:<strong>)?[\d\s\u00a0\u202f]*?(\d{1,3}(?:[\s\u00a0\u202f]\d{3})+|\d{4,7})[\s\u00a0\u202f]*(?:€|&euro;)",
+    re.IGNORECASE)
 IAD_TITLE_RE = re.compile(r"<h[123][^>]*>(.*?)</h[123]>", re.DOTALL | re.IGNORECASE)
 
 
@@ -152,7 +162,11 @@ def parse_iad(html: str, source_url: str) -> list[dict]:
     results = []
     seen = set()
 
-    for href, inner_html in IAD_LINK_RE.findall(html):
+    for m in IAD_LINK_RE.finditer(html):
+        href, inner_html = m.group(1), m.group(2)
+        # The price element sits BEFORE the link in the Vue-rendered card
+        # (price <p> ... then <a href>).  Scan the window preceding the match.
+        pre_window = html[max(0, m.start() - 2000):m.start()]
         # Only care about /annonce/ links (detail pages, not navigation)
         if "/annonce/" not in href:
             continue
@@ -161,12 +175,15 @@ def parse_iad(html: str, source_url: str) -> list[dict]:
             continue
         seen.add(full_url)
 
-        # Try to extract price from nearby content
+        # Try to extract price from nearby content (pre-window: nearest hit)
         price = None
         pm = IAD_CARD_PRICE_RE.search(inner_html)
+        if not pm:
+            pre_hits = list(IAD_CARD_PRICE_RE.finditer(pre_window))
+            pm = pre_hits[-1] if pre_hits else None
         if pm:
             try:
-                price = int(pm.group(1).replace(" ", ""))
+                price = int(re.sub(r"[.\s\u00a0\u202f]", "", pm.group(1)))
             except ValueError:
                 pass
 
@@ -186,10 +203,10 @@ def parse_iad(html: str, source_url: str) -> list[dict]:
                 title = loc[:120]
 
         # Location + surface from the URL slug:
-        #   /annonce/immeuble-vente-<town>-<NNN>m2/r<id>
+        #   /annonce/<immeuble|maison>-vente-<town>-<NNN>m2/r<id>
         location = None
         surface = None
-        um = re.search(r"/immeuble-vente-([a-z0-9\-]+?)(?:-(\d+))?m2/", href)
+        um = re.search(r"/(?:immeuble|maison)-vente-([a-z0-9\-]+?)(?:-(\d+))?m2/", href)
         if um:
             town_slug = um.group(1).replace("-", " ").strip()
             if town_slug:
@@ -240,18 +257,18 @@ PV_CARD_RE = re.compile(
     r'<div[^>]*class="[^"]*blocAnnonce[^"]*"[^>]*data-id="([^"]+)"[^>]*>(.*?)(?=<div[^>]*class="[^"]*blocAnnonce|</div>\s*</div>\s*</div>\s*</div>|id="bloc_loader")',
     re.DOTALL | re.IGNORECASE,
 )
-PV_DETAIL_HREF_RE = re.compile(r'href="(/immobilier/vente/immeuble/[A-Z0-9]+)"', re.IGNORECASE)
+PV_DETAIL_HREF_RE = re.compile(r'href="(/immobilier/vente/(?:immeuble|maison)/[A-Z0-9]+)"', re.IGNORECASE)
 
 
 def _pv_is_detail_url(url: str) -> bool:
     """True only if the URL points to an individual property (has a base36 ID)."""
-    return bool(re.search(r"/immeuble/([A-Z0-9]{17,22})$", url))
+    return bool(re.search(r"/(?:immeuble|maison)/([A-Z0-9]{17,22})$", url))
 PV_PRICE_RE = re.compile(r"([\d\s]{4,})\s*&euro;|([\d\s]{4,})\s*€", re.IGNORECASE)
 PV_SURFACE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*m²", re.IGNORECASE)
 # location appears as "Soissons (02)" — a proper town name followed by (NN) or NNNNN.
-# Anchored: NOT preceded by "Immeuble" (which would grab the surface line).
+# Anchored: NOT preceded by the property-type word (which would grab the surface line).
 PV_LOCATION_RE = re.compile(
-    r"(?<!Immeuble\s)([A-ZÀ-Ý][\wÀ-ÿ'\- ]{2,}?)\s*\(?\s*(\d{2,5})\s*\)?",
+    r"(?<!Immeuble\s)(?<!Maison\s)([A-ZÀ-Ý][\wÀ-ÿ'\- ]{2,}?)\s*\(?\s*(\d{2,5})\s*\)?",
     re.IGNORECASE,
 )
 PV_DPE_RE = re.compile(r"DPE\s*:\s*([A-G])", re.IGNORECASE)
@@ -291,8 +308,8 @@ def parse_paruvendu(html: str, source_url: str) -> list[dict]:
         return []
 
     for card in doc.cssselect("div.blocAnnonce"):
-        # detail link
-        a = card.cssselect('a[href*="/immobilier/vente/immeuble/"]')
+        # detail link (immeuble OR maison)
+        a = card.cssselect('a[href*="/immobilier/vente/immeuble/"], a[href*="/immobilier/vente/maison/"]')
         if not a:
             continue
         href = a[0].get("href") or ""
@@ -612,9 +629,21 @@ SOURCE_URLS = {
     # spill-over is acceptable, single-department scope is fine).  When a
     # second department is actually added, parameterise these URLs from
     # config.DEPARTMENTS — until then this stays simple and explicit.
-    "fnaim": "https://www.fnaim.fr/liste-annonces-immobilieres/17-acheter-immeuble-aisne-02.htm",
-    "iad": "https://www.iadfrance.fr/annonces/aisne-02/vente/immeuble",
-    "paruvendu": "https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/",
+    # Each source lists immeuble + maison categories (maison coverage added
+    # 2026-08-22 — previously maison-style stock was only captured by
+    # lesiteimmo).
+    "fnaim": (
+        "https://www.fnaim.fr/liste-annonces-immobilieres/17-acheter-immeuble-aisne-02.htm",
+        "https://www.fnaim.fr/liste-annonces-immobilieres/1-acheter-maison-aisne-02.htm",
+    ),
+    "iad": (
+        "https://www.iadfrance.fr/annonces/aisne-02/vente/immeuble",
+        "https://www.iadfrance.fr/annonces/aisne-02/vente/maison",
+    ),
+    "paruvendu": (
+        "https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/",
+        "https://www.paruvendu.fr/immobilier/vente/maison/aisne-02/",
+    ),
     # lesiteimmo splits categories: immeuble (~132) + maison (large) both
     # contain building-type stock; crawl both.
     "lesiteimmo": (

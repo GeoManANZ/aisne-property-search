@@ -56,21 +56,24 @@ def _url_is_individual(url: str, source: str) -> bool:
     if not url:
         return False
     if source == "paruvendu":
-        # detail URL ends in a base36 ID (e.g. .../immeuble/1288815079A1KIVHIM000)
+        # detail URL ends in a base36 ID under /immeuble/ OR /maison/
         import re
-        return bool(re.search(r"/immeuble/([A-Z0-9]{17,22})$", url))
+        return bool(re.search(r"/(?:immeuble|maison)/([A-Z0-9]{17,22})$", url))
     if source == "fnaim":
         import re
         # detail URL has a numeric ad id: /annonce-immobiliere/<digits>/<slug>
         # BUT department-wide search pages share that shape, e.g.
         #   .../52588214/17-acheter-immeuble-aisne-2.htm   ← NOT a property
-        # Real detail slugs end with <town>-<postcode>.htm
-        if re.search(r"/annonce-immobiliere/\d+/17-acheter-immeuble-[^/]*-\d\.htm$", url):
+        #   .../123456/1-acheter-maison-aisne-02.htm       ← NOT a property
+        # Real detail slugs end with <town>-<postcode>.htm (5-digit postcode);
+        # dept search pages end with a 1-2 digit department number.
+        if re.search(r"/annonce-immobiliere/\d+/(?:\d+-)?acheter-(?:immeuble|maison)-[^/]*-\d{1,2}\.htm$", url):
             return False
         return bool(re.search(r"/annonce-immobiliere/\d+/", url))
     if source == "iad":
-        # detail URL: /annonce/immeuble-vente-<town>-<N>m2/r<id>
-        return "/annonce/immeuble-vente-" in url
+        # detail URL: /annonce/<immeuble|maison>-vente-<town>-<N>m2/r<id>
+        import re
+        return bool(re.search(r"/annonce/(?:immeuble|maison)-vente-", url))
     if source == "lesiteimmo":
         import re
         return bool(re.match(
