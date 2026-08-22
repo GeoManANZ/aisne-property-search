@@ -22,21 +22,21 @@ from pathlib import Path
 from datetime import datetime, timezone
 sys.path.insert(0, Path(__file__).parent.as_posix())
 
+import config
 from french_property_parsers import _clean_seloger_price
 from cookie_store import get_cookies, save_cookies
 from engine_metrics import record_outcome
 
 SELOGER_DOMAIN = "www.seloger.com"
-
-BASE_URL = ("https://www.seloger.com/recherche/achat/immeuble/"
-            "hauts-de-france/aisne-02/ad06fr2")
+_DEP = config.DEFAULT_DEPARTMENT
+BASE_URL = config.seloger_serp_url(_DEP)
 CRITERIA = {
     "estateSubTypes": [], "portals": ["SL"], "furnished": [],
     "featuresIncluded": [], "projectTypes": ["New_Build", "Resale"],
     "buildState": [], "locationsInBuildingIncluded": [],
     "locationsInBuildingExcluded": [], "energyCertificateClass": [],
     "distributionTypes": ["Buy"], "estateTypes": ["Building"],
-    "location": {"placeIds": ["AD06FR2"]}, "texts": [],
+    "location": {"placeIds": [_DEP["place_id"]]}, "texts": [],
 }
 
 

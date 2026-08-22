@@ -62,6 +62,11 @@ def _url_is_individual(url: str, source: str) -> bool:
     if source == "fnaim":
         import re
         # detail URL has a numeric ad id: /annonce-immobiliere/<digits>/<slug>
+        # BUT department-wide search pages share that shape, e.g.
+        #   .../52588214/17-acheter-immeuble-aisne-2.htm   ← NOT a property
+        # Real detail slugs end with <town>-<postcode>.htm
+        if re.search(r"/annonce-immobiliere/\d+/17-acheter-immeuble-[^/]*-\d\.htm$", url):
+            return False
         return bool(re.search(r"/annonce-immobiliere/\d+/", url))
     if source == "iad":
         # detail URL: /annonce/immeuble-vente-<town>-<N>m2/r<id>

@@ -102,6 +102,13 @@ def parse_fnaim(html: str, source_url: str) -> list[dict]:
         lm = re.search(r"\b([A-ZÀ-Ý][\wÀ-ÿ'\-]*(?:\s+[A-ZÀ-Ý][\wÀ-ÿ'\-]*)*)\s+(\d{5})\s*$", title)
         if lm:
             location = f"{lm.group(1).strip()} ({lm.group(2)})"
+        else:
+            # Fallback: the detail URL slug carries <town>-<postcode>.htm
+            # e.g. /annonce-immobiliere/52722152/17-acheter-immeuble-hirson-02500.htm
+            um = re.search(r"/immeuble-(.+?)-(\d{5})\.htm", href)
+            if um:
+                town = um.group(1).replace("-", " ").title()
+                location = f"{town} ({um.group(2)})"
 
         # Full URL
         full_url = f"https://www.fnaim.fr{href}" if href.startswith("/") else href

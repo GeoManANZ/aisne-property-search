@@ -23,6 +23,24 @@ SCAN_DIR = Path(os.environ.get(
 ))
 SCAN_DIR.mkdir(parents=True, exist_ok=True)
 
+# ---------------------------------------------------------------------------
+# Search area — departments to scrape
+# ---------------------------------------------------------------------------
+# Each entry: place_id (SeLoger BFF location id), slug (URL path segment),
+# label.  To extend to other departments later, add entries, e.g.:
+#   {"place_id": "AD80FR2", "slug": "somme-80", "label": "Somme"},
+DEPARTMENTS = [
+    {"place_id": "AD06FR2", "slug": "aisne-02", "label": "Aisne (02)"},
+]
+DEFAULT_DEPARTMENT = DEPARTMENTS[0]
+
+
+def seloger_serp_url(dep: dict | None = None) -> str:
+    """SeLoger SERP URL for a department."""
+    d = dep or DEFAULT_DEPARTMENT
+    return (f"https://www.seloger.com/recherche/achat/immeuble/"
+            f"hauts-de-france/{d['slug']}/{d['place_id'].lower()}")
+
 
 # ---------------------------------------------------------------------------
 # Load .env (gitignored — holds secrets)
