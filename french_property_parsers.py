@@ -603,11 +603,15 @@ PARSERS = {
     "lesiteimmo": parse_lesiteimmo,
     # NOTE: SeLoger is intentionally NOT wired into the ladder.  It is a JS
     # SPA behind DataDome; the definitive path is seloger_api_sweep.py
-    # (BFF API).  parse_seloger / parse_ufrn below are kept for standalone
-    # scripts but must NOT be run through the ladder's plain-HTTP fetch.
+    # (BFF API).  The old DOM card parsers were removed — do not go looking
+    # for parse_seloger / parse_ufrn.
 }
 
 SOURCE_URLS = {
+    # NOTE: intentionally Aisne-hardcoded (user decision 2026-08-22: border
+    # spill-over is acceptable, single-department scope is fine).  When a
+    # second department is actually added, parameterise these URLs from
+    # config.DEPARTMENTS — until then this stays simple and explicit.
     "fnaim": "https://www.fnaim.fr/liste-annonces-immobilieres/17-acheter-immeuble-aisne-02.htm",
     "iad": "https://www.iadfrance.fr/annonces/aisne-02/vente/immeuble",
     "paruvendu": "https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/",
@@ -649,13 +653,13 @@ def ladder(
     delay_s: float = 2.0,
 ) -> dict:
     """
-    Crawl FNAIM + IAD + ParuVendu search pages, extract all listings,
-    optionally scan detail pages for the most promising ones.
+    Crawl FNAIM + IAD + ParuVendu + lesiteimmo search pages, extract all
+    listings, optionally scan detail pages for the most promising ones.
 
     Returns dict with per-source results and consolidated listings.
     """
     if sources is None:
-        sources = ["fnaim", "iad", "paruvendu"]
+        sources = ["fnaim", "iad", "paruvendu", "lesiteimmo"]
     if scan_details_for is None:
         scan_details_for = []
 

@@ -717,9 +717,10 @@ def _human_scroll(page, total=None, steps=5):
 def _human_warmup(page, domain):
     """Load the site root first so we arrive like a real user, not a bot."""
     import time as _t
+    import random as _random
     try:
         page.goto(f"https://{domain}/", wait_until="domcontentloaded", timeout=20000)
-        _t.sleep(random.uniform(1.0, 2.5))
+        _t.sleep(_random.uniform(1.0, 2.5))
         _human_scroll(page, steps=3)
     except Exception:
         pass  # warm-up is best-effort; proceed to target regardless
@@ -768,14 +769,27 @@ def scrape_via_camoufox(url, timeout_s=45, use_proxy=False, warmup=True):
 
     try:
         from camoufox.sync_api import Camoufox
+        from cookie_store import get_cookies, save_cookies
 
         launch = {"headless": True, "locale": "fr-FR", "humanize": True,
                   "geoip": True}  # geoip=True ties locale/timezone to the proxy IP
         if proxy_conf:
             launch["proxy"] = proxy_conf
 
+        # Cookie reuse (same discipline as the datadome engine): inject any
+        # cookies earned by a previous run on this same proxy identity
+        # before launch so a prior clearance carries over.
+        cookie_key = (f"{proxy_conf['username']}" if proxy_conf else "direct")
+        saved = get_cookies(cookie_key, domain)
         with Camoufox(**launch) as browser:
             page = browser.new_page()
+            if saved:
+                try:
+                    _ctx = page.context
+                    _ctx.add_cookies([c for c in saved
+                                      if c.get("domain") and c.get("name")])
+                except Exception:
+                    pass  # best-effort; stale cookies must never break a run
 
             if warmup:
                 _human_warmup(page, domain)
@@ -796,6 +810,13 @@ def scrape_via_camoufox(url, timeout_s=45, use_proxy=False, warmup=True):
             html = page.content()
             status = 200
             blocked = is_cloudflare_block(html, status)
+            if not blocked:
+                # persist everything this context earned (clearance cookies,
+                # _dd_s analytics, etc.) for the next run on this proxy key
+                try:
+                    save_cookies(cookie_key, domain, page.context.cookies())
+                except Exception:
+                    pass
             return {"success": not blocked, "rawHtml": html, "status": status,
                     "error": None if not blocked else "block page via camoufox",
                     "blocked": blocked, "proxy": proxy_conf}
@@ -1153,7 +1174,7 @@ def route_engines(challenge_type: str, full_cascade: list[str],
     if domain in _SPA_DOMAINS and challenge_type in ("hard403", "datadome"):
         ordered = ["camoufox", "datadome", "webshare-stealth", "stealth"]
         try:
-            from engine_metrics import best_engine_for
+            from engine_metrics import best_engine_for, _DEFAULT_ORDER
             hist = best_engine_for(domain, challenge_type)
             if hist and hist != _DEFAULT_ORDER.get(challenge_type, []):
                 # historical data beats the hint once it exists
