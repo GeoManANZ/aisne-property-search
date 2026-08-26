@@ -20,6 +20,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# One-alert-per-drop state: url + new_price of every drop already delivered.
+# A drop is only reported the FIRST time it is seen; subsequent runs skip it.
+ALERTED_FILE = Path(os.environ.get(
+    "PRICE_ALERT_STATE", "/opt/data/property_cache/aisne_alerted_drops.json"))
+
 # Resolve the project dir (where listings_db.py lives) regardless of CWD or
 # the cron-run copy location.  Two candidates:
 #   1. this file's own directory (normal runs)
@@ -87,6 +92,20 @@ def get_real_drops(db, days: int = None, min_pct: float = None) -> list[dict]:
     return out
 
 
+def load_alerted() -> dict:
+    """{url: new_price} of drops already alerted."""
+    try:
+        return json.loads(ALERTED_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_alerted(state: dict) -> None:
+    ALERTED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ALERTED_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+
+
 def format_alert(drops: list[dict]) -> str:
     if not drops:
         return "📉 **Aucune baisse de prix détectée** (période: 30 j)"
@@ -122,11 +141,28 @@ def main():
     ap.add_argument("--json", action="store_true", help="Print JSON drops instead of text")
     ap.add_argument("--silent-if-none", action="store_true",
                     help="Exit 0 with NO stdout if no drops (cron no_agent silent-run)")
+    ap.add_argument("--no-dedup", action="store_true",
+                    help="Disable once-only alerting (report all drops in window)")
     args = ap.parse_args()
 
     db = load_db()
     drops = get_real_drops(db, days=args.days, min_pct=args.min_pct)
     db.close()
+
+    # Once-only dedup: skip drops already delivered at this price level.
+    # Keyed by url + new_price, so a FURTHER drop re-alerts.
+    if args.no_dedup:
+        alerted = {}
+        fresh = drops
+    else:
+        alerted = load_alerted()
+        fresh = [d for d in drops
+                 if alerted.get(d.get("url")) != d.get("new_price")]
+        if fresh:
+            for d in fresh:
+                alerted[d["url"]] = d["new_price"]
+            save_alerted(alerted)
+    drops = fresh
 
     if args.json:
         print(json.dumps(drops, ensure_ascii=False, indent=2))
