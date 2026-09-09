@@ -234,3 +234,47 @@ Once earned, that cookie is honoured for hours on the SAME residential IP.
 - `cron.example` — daily sweep/ladder/alert schedules (cron + systemd timer).
 - `.env` is the single credential source; config.py FAILS LOUDLY (no silent
   fallback to another project's proxy_config.py anymore).
+
+---
+
+## 12. Pagination params are per-portal — verify, don't assume (learned 2026-08-26)
+
+The ladder appended `?page=N` for EVERY source. ParuVendu silently ignored it
+and returned page 1 forever — so the crawler stopped after ~30 rows while the
+dept pages actually held **1,530 maison + 131 immeuble annonces**. FNAIM, IAD
+and lesiteimmo all paginate with `?page=N`; ParuVendu uses **`?p=N`**.
+
+**Rule:** never assume a portal's pagination query param. Before multi-page
+crawling a source, fetch page 2 once and diff the listing IDs against page 1
+(0 new = wrong param, same 200 + 0 new = ignored). Portal HTML changes silently
+break this — the ladder's `PAGINATION_PARAM` dict is the single place to fix it.
+
+## 13. lesiteimmo labels land as "maison" (learned 2026-08-26)
+
+lesiteimmo categories terrain-de-loisir/forest/étangs ads as "maison" and puts
+the LAND area into "surface habitable" (4,106 m² "maison" = terrain de loisir;
+96,594 m² "Domaine forestier"; 18,073 m² "deux étangs"; 15,912 m² "hutte de
+chasse"). These rank top by €/m² (€7/m²) and pollute recommendations.
+
+**Rule:** cap surface at a building-plausible ceiling when ranking. Audit showed
+every REAL building ≤1,000 m²; all land rows >2,000 m². `config.INVESTMENT`
+`max_surface_m2=1500` is the centralized guard. Detail-page check before
+trusting a huge-surface row (title says "Terrain à vendre").
+
+## 14. IAD URL slugs: pieces-count prefix + no postcode (learned 2026-08-26)
+
+IAD detail URLs come in two shapes: `immeuble-vente-laon-230m2` and
+`maison-vente-1-piece-hirson-400m2`. A naive `-vente-<town>-\d+m2` regex
+swallows `1-piece` into the town → locations like "1 Piece Hirson". Skip the
+optional `\d+-pieces?-` prefix. IAD slug locations also carry NO postcode, so
+cross-source dedup must match bare "Hirson" against "Hirson (02)" via
+postcode-compatible matching (equal / missing / dept-prefix).
+
+## 15. Cross-source duplicates: collapse in the report, never hide URLs
+
+The same property appears on multiple portals (SeLoger legacy + slug URLs,
+lesiteimmo re-lists) and as IAD+ParuVendu pairs at identical town+price+surface.
+`recommendations_report.fetch_candidates(group_dups=True)` collapses probable
+dups (earliest first_seen primary) and attaches alternate URLs as `alt_urls` —
+rendered inline so **no link is ever hidden** (user requirement: ALWAYS include
+all property URLs).

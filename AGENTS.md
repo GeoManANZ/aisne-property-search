@@ -34,7 +34,9 @@ All sources now crawl BOTH immeuble + maison categories.
 3. Price drops require corroboration: current DB price must equal the lower
    figure; implausible values excluded. Guards live in `config.PRICE_ALERT`.
 4. Investment criteria live in `config.INVESTMENT` (min_surface_m2,
-   price_min/max_eur, top_n) — amend there, not in report scripts.
+   max_surface_m2, price_min/max_eur, top_n) — amend there, not in report scripts.
+   max_surface_m2=1500 kills lesiteimmo land-parcel mis-parses (they label
+   terrain/forest as "maison" with land area in "surface habitable").
 5. Run `test_invariants.py` before ANY change to price extraction or validation:
    `.venv/bin/python test_invariants.py` (<2s, must exit 0).
 
@@ -58,12 +60,20 @@ via the sweep script or manually through `bulk_upsert_validated`.
 - **Aisne Weekly Recommendations** (`2a6b4b15dfb1`) — Mondays 08:00 UTC, Telegram MEDIA.
 
 ## Known state & quirks
-- DB ≈3,300 rows, ~511 match investment criteria. Border spill-over into
-  neighbouring depts is ACCEPTED (user decision — no postcode guard; Somme rows kept).
+- DB ≈3,300 rows, ~424 distinct candidates match investment criteria after dup
+  collapse. Border spill-over into neighbouring depts is ACCEPTED (user decision
+  — no postcode guard; Somme rows kept).
 - Orpi: hard Cloudflare block, 1 row total — not a bug.
 - SeLoger `/wl-cdp/` promoted cards structurally lack descriptions.
-- Terrain-parcel surfaces (>5,000 m²) can pollute €/m² rankings — filter or cap
-  when reporting.
+- Terrain-parcel surfaces pollute €/m² rankings — lesiteimmo labels land as
+  "maison"; `config.INVESTMENT.max_surface_m2=1500` caps them. Real buildings
+  are all ≤1,000 m²; land/forest/étangs rows are 4,000–96,000 m².
+- ParuVendu paginates with `?p=N` NOT `?page=N` — pagination param lives in
+  `PAGINATION_PARAM`. Before 2026-08-26 the ladder only ever got page 1
+  (~30 of 1,530 maison + 131 immeuble annonces).
+- IAD URL slugs may carry a pieces-count prefix (`maison-vente-1-piece-hirson-400m2`)
+  — parser skips it; IAD locations have no postcode (dedup handles via
+  postcode-compatible matching).
 - lesiteimmo dept search omits some live listings; the town sweep (270 town
   pages) recovers them — don't remove it.
 - Cascade adaptive routing + cookie store ARE wired (route_engines /
