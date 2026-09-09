@@ -26,3 +26,5 @@ seloger_data/
 *.html
 engine_metrics.jsonl
 listings.db
+aisne-recommendations-weekly.md
+logs/*.log
