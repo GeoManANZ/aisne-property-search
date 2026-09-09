@@ -47,6 +47,24 @@ def fetch(url: str, timeout: int = 30) -> str:
     return r.text
 
 
+def fetch_page(url: str, timeout: int = 30) -> tuple[str | None, str | None]:
+    """Like fetch() but returns (html, error) instead of raising.
+
+    A 404/410 on a paginated search page is the portal's END-OF-PAGINATION
+    signal (e.g. ParuVendu has 131 immeubles → p=6 is 404).  Callers that
+    paginate must treat it as "stop", NOT as a fatal error that discards
+    the listings already collected.
+    """
+    try:
+        return fetch(url, timeout=timeout), None
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code in (404, 410):
+            return None, "end"
+        return None, f"{type(e).__name__}: {e}"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
 # ---------------------------------------------------------------------------
 # FNAIM PARSER
 # ---------------------------------------------------------------------------
@@ -738,13 +756,26 @@ def ladder(
 
             listings = []
             seen_urls = set()
+            last_html = ""  # last SUCCESSFUL page body (for raw-html save)
             for base_url in base_urls:
+                cat = base_url.rsplit("/", 2)[-2]  # e.g. 'immeuble'/'maison'
                 page = 1
                 max_pages = 30  # hard safety stop (lesiteimmo maison has 14+)
                 page_param = PAGINATION_PARAM.get(source, "page")
                 while page <= max_pages and len(listings) < max_listings_per_source:
                     url = base_url if page == 1 else f"{base_url}{'&' if '?' in base_url else '?'}{page_param}={page}"
-                    html = fetch(url, timeout=30)
+                    html, fetch_err = fetch_page(url, timeout=30)
+                    if fetch_err == "end":
+                        # 404/410 on a paginated URL = no more pages.  This is
+                        # NORMAL end-of-pagination, not an error — keep what
+                        # we already collected (was: blanket except discarded
+                        # the whole source on ParuVendu p=6, losing 131 rows).
+                        log_lines.append(f"  [{cat}] page {page}: end of pagination (404/410)")
+                        break
+                    if fetch_err or not html:
+                        log_lines.append(f"  [{cat}] page {page}: fetch failed: {fetch_err}")
+                        break
+                    last_html = html
                     page_listings = parser(html, url)
                     new = 0
                     for l in page_listings:
@@ -754,7 +785,6 @@ def ladder(
                             new += 1
                             if len(listings) >= max_listings_per_source:
                                 break
-                    cat = base_url.rsplit("/", 2)[-2]  # e.g. 'immeuble'/'maison'
                     log_lines.append(f"  [{cat}] page {page}: {new} new ({len(listings)} total)")
                     if new == 0:
                         break  # exhausted this start URL
@@ -793,14 +823,14 @@ def ladder(
                 "listings_count": len(unique),
                 "listings": unique,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
-                "html_length": len(html),
+                "html_length": len(last_html),
             }
             consolidated.extend(unique)
             log_lines.append(f"  Time: {time.time() - t0:.1f}s")
             log_lines.append("")
 
-            # Save raw HTML for this source (last page fetched)
-            (out_dir / f"{source}_search.html").write_text(html[:10_000_000], encoding="utf-8")
+            # Save raw HTML for this source (last successful page fetched)
+            (out_dir / f"{source}_search.html").write_text(last_html[:10_000_000], encoding="utf-8")
 
         except Exception as e:
             log_lines.append(f"  ✗ Error: {type(e).__name__}: {e}")
