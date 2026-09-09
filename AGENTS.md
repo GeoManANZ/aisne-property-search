@@ -60,17 +60,20 @@ via the sweep script or manually through `bulk_upsert_validated`.
 - **Aisne Weekly Recommendations** (`2a6b4b15dfb1`) — Mondays 08:00 UTC, Telegram MEDIA.
 
 ## Known state & quirks
-- DB ≈3,300 rows, ~424 distinct candidates match investment criteria after dup
-  collapse. Border spill-over into neighbouring depts is ACCEPTED (user decision
-  — no postcode guard; Somme rows kept).
+- DB ≈3,300+ rows (ParuVendu 309 after dept-wide fix), ~424+ distinct candidates
+  match investment criteria after dup collapse. Border spill-over into
+  neighbouring depts is ACCEPTED (user decision — no postcode guard; Somme rows
+  kept).
 - Orpi: hard Cloudflare block, 1 row total — not a bug.
 - SeLoger `/wl-cdp/` promoted cards structurally lack descriptions.
 - Terrain-parcel surfaces pollute €/m² rankings — lesiteimmo labels land as
   "maison"; `config.INVESTMENT.max_surface_m2=1500` caps them. Real buildings
   are all ≤1,000 m²; land/forest/étangs rows are 4,000–96,000 m².
 - ParuVendu paginates with `?p=N` NOT `?page=N` — pagination param lives in
-  `PAGINATION_PARAM`. Before 2026-08-26 the ladder only ever got page 1
-  (~30 of 1,530 maison + 131 immeuble annonces).
+  `PAGINATION_PARAM`. A 404/410 on p=N+1 is END-OF-PAGINATION (fetch_page
+  returns err='end'), NOT fatal — before 2026-08-26 the ladder only ever got
+  page 1 (~30 of 279 annonces the portal actually serves; its "1,530 annonces"
+  SEO count is inflated — pagination stops at p=5).
 - IAD URL slugs may carry a pieces-count prefix (`maison-vente-1-piece-hirson-400m2`)
   — parser skips it; IAD locations have no postcode (dedup handles via
   postcode-compatible matching).
