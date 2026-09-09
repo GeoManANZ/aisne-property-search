@@ -202,11 +202,16 @@ def parse_iad(html: str, source_url: str) -> list[dict]:
                 loc = parts[-1] if len(parts) > 1 else parts[0]
                 title = loc[:120]
 
-        # Location + surface from the URL slug:
-        #   /annonce/<immeuble|maison>-vente-<town>-<NNN>m2/r<id>
+        # Location + surface from the URL slug.  Two shapes seen live:
+        #   /annonce/immeuble-vente-laon-230m2/r2041287
+        #   /annonce/maison-vente-1-piece-hirson-400m2/r1947368
+        # The optional \d+-piece(s)- prefix must be skipped (was being
+        # swallowed into the town slug → "1 Piece Hirson" locations).
         location = None
         surface = None
-        um = re.search(r"/(?:immeuble|maison)-vente-([a-z0-9\-]+?)(?:-(\d+))?m2/", href)
+        um = re.search(
+            r"/(?:immeuble|maison)-vente-(?:\d+-pieces?-)?([a-z0-9\-]+?)(?:-(\d+))?m2/",
+            href)
         if um:
             town_slug = um.group(1).replace("-", " ").strip()
             if town_slug:
@@ -641,7 +646,7 @@ SOURCE_URLS = {
         "https://www.iadfrance.fr/annonces/aisne-02/vente/maison",
     ),
     "paruvendu": (
-        "https://www.paruvendu.fr/immobilier/vente/immeuble/soissons-02200/",
+        "https://www.paruvendu.fr/immobilier/vente/immeuble/aisne-02/",
         "https://www.paruvendu.fr/immobilier/vente/maison/aisne-02/",
     ),
     # lesiteimmo splits categories: immeuble (~132) + maison (large) both
@@ -651,6 +656,11 @@ SOURCE_URLS = {
         "https://www.lesiteimmo.com/acheter/maison/aisne-02",
     ),
 }
+
+# ParuVendu is the odd one out: its pagination param is ?p=N, not ?page=N
+# (verified 2026-08-26: ?page=2 silently returns page 1 → the ladder stopped
+# after page 1 and missed ~100 immeubles on the dept-wide page).
+PAGINATION_PARAM = {"paruvendu": "p"}
 
 def _lsi_town_slugs() -> set[str]:
     """Distinct lesiteimmo town slugs already known in listings.db."""
@@ -731,8 +741,9 @@ def ladder(
             for base_url in base_urls:
                 page = 1
                 max_pages = 30  # hard safety stop (lesiteimmo maison has 14+)
+                page_param = PAGINATION_PARAM.get(source, "page")
                 while page <= max_pages and len(listings) < max_listings_per_source:
-                    url = base_url if page == 1 else f"{base_url}{'&' if '?' in base_url else '?'}page={page}"
+                    url = base_url if page == 1 else f"{base_url}{'&' if '?' in base_url else '?'}{page_param}={page}"
                     html = fetch(url, timeout=30)
                     page_listings = parser(html, url)
                     new = 0

@@ -41,6 +41,14 @@ DEFAULT_DEPARTMENT = DEPARTMENTS[0]
 # Amend here; every consumer picks it up automatically.
 INVESTMENT = {
     "min_surface_m2": 150,      # minimum habitable surface
+    "max_surface_m2": 1500,     # ceiling — kills land-parcel mis-parses.
+                                # Audit 2026-08-26: every real building in DB
+                                # is <=1000 m²; every row >2000 m² is terrain/
+                                # forest/étangs (96,594 m² "Domaine forestier",
+                                # 18,073 m² "deux étangs", 15,912 m² "hutte de
+                                # chasse", 4,106 m² "terrain de loisir").
+                                # lesiteimmo labels land as "maison" and puts
+                                # land area in "surface habitable".
     "price_min_eur": 10_000,    # ignore below (junk/parts listings)
     "price_max_eur": 220_000,   # budget ceiling
     "rank_by": "price_per_m2",  # 'price_per_m2' (asc) is the only mode for now
