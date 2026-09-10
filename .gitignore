@@ -28,3 +28,9 @@ engine_metrics.jsonl
 listings.db
 aisne-recommendations-weekly.md
 logs/*.log
+
+# DVF downloads (~4 MB) + liveness baselines — data, not code
+data/dvf/
+data/*.json
+listings.db-shm
+listings.db-wal

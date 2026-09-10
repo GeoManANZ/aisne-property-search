@@ -70,6 +70,7 @@ def fetch_candidates(db, min_surface=MIN_SURFACE, max_surface=MAX_SURFACE,
           AND price_eur BETWEEN ? AND ?
           AND surface_m2 IS NOT NULL
           AND surface_m2 BETWEEN ? AND ?
+          AND COALESCE(status, 'active') = 'active'
         ORDER BY (price_eur / surface_m2) ASC
         """,
         (price_min, price_max, min_surface, max_surface),
