@@ -21,6 +21,7 @@ import sqlite3
 import sys
 import time
 import unicodedata
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -28,6 +29,10 @@ DB = "listings.db"
 BAN = "https://api-adresse.data.gouv.fr/search/"
 UA = "aisne-property-search/1.0 (personal investment research)"
 SLEEP = 0.12  # polite: ~8 req/s max
+
+
+class TransientBanError(Exception):
+    """Network/5xx failure — the town must NOT be cached as a permanent miss."""
 
 
 def norm_town(loc: str) -> str:
@@ -69,7 +74,12 @@ def ensure_table(db: sqlite3.Connection) -> None:
 
 
 def ban_lookup(town: str, postcode: str) -> dict | None:
-    """Query BAN for a municipality. Returns best hit or None."""
+    """Query BAN for a municipality. Returns best hit or None.
+
+    Raises TransientBanError on HTTP 5xx / network errors so the caller can
+    leave the town UNCACHED and retry on a later run (caching a transient
+    504 as a permanent miss would poison the cache forever).
+    """
     params = {"q": town, "type": "municipality", "limit": "5"}
     if postcode and len(postcode) == 5:
         params["postcode"] = postcode
@@ -78,9 +88,12 @@ def ban_lookup(town: str, postcode: str) -> dict | None:
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode("utf-8", "replace"))
-    except Exception as e:
-        print(f"    ! BAN error for {town!r}: {e}", file=sys.stderr)
-        return None
+    except urllib.error.HTTPError as e:
+        if e.code >= 500 or e.code == 429:
+            raise TransientBanError(f"HTTP {e.code}") from e
+        raise
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise TransientBanError(str(e)) from e
     feats = data.get("features") or []
     if not feats:
         return None
@@ -146,16 +159,28 @@ def main() -> int:
         db.execute("DELETE FROM geo_cache")
         db.commit()
 
-    cached = {r[0] for r in db.execute("SELECT loc_key FROM geo_cache")}
-    todo = sorted(k for k in wanted if k not in cached)
+    cached = {r[0]: r[1] for r in db.execute("SELECT loc_key, lat FROM geo_cache")}
+    # towns never looked up, plus ones previously cached WITHOUT coordinates
+    # (a definitive BAN miss, or a transient failure from an older run) — those
+    # are cheap to re-ask, and leaving them out would hide a bad cache entry.
+    todo = sorted(k for k in wanted if cached.get(k) is None)
     if args.limit:
         todo = todo[: args.limit]
-    print(f"geocoding {len(todo)} new town(s) via BAN "
-          f"({len(cached)} already cached)\n", flush=True)
+    print(f"geocoding {len(todo)} town(s) via BAN "
+          f"({len(cached) - sum(1 for v in cached.values() if v is None)} already resolved)\n",
+          flush=True)
 
-    ok = fail = 0
+    ok = fail = skipped = 0
     for i, k in enumerate(todo, 1):
-        hit = ban_lookup(k, wanted[k]["pc"])
+        try:
+            hit = ban_lookup(k, wanted[k]["pc"])
+        except TransientBanError as e:
+            # leave UNCACHED so a later run retries — never poison the cache
+            print(f"    ! transient BAN failure for {k!r} ({e}) — will retry later",
+                  file=sys.stderr)
+            skipped += 1
+            time.sleep(0.6)
+            continue
         if hit:
             db.execute(
                 "INSERT OR REPLACE INTO geo_cache "
@@ -181,8 +206,9 @@ def main() -> int:
 
     total = db.execute("SELECT COUNT(*) FROM geo_cache").fetchone()[0]
     geo = db.execute("SELECT COUNT(*) FROM geo_cache WHERE lat IS NOT NULL").fetchone()[0]
-    print(f"\ndone: {ok} geocoded, {fail} unmatched, cache now {total} rows "
-          f"({geo} with coordinates, {100 * geo / total:.0f}%)")
+    print(f"\ndone: {ok} geocoded, {fail} unmatched, {skipped} transient-skipped; "
+          f"cache now {total} rows ({geo} with coordinates, "
+          f"{100 * geo / total:.0f}%)")
     db.close()
     return 0
 
