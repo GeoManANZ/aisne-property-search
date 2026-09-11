@@ -64,7 +64,7 @@ def fetch_candidates(db, min_surface=MIN_SURFACE, max_surface=MAX_SURFACE,
     rows = db.conn.execute(
         """
         SELECT url, source, title, price_eur, surface_m2, dpe_energy,
-               location, agency, first_seen
+               location, agency, first_seen, http_status
         FROM listings
         WHERE price_eur IS NOT NULL
           AND price_eur BETWEEN ? AND ?
@@ -77,13 +77,14 @@ def fetch_candidates(db, min_surface=MIN_SURFACE, max_surface=MAX_SURFACE,
     ).fetchall()
     out = []
     for r in rows:
-        url, source, title, price, surface, dpe, loc, agency, first_seen = r
+        url, source, title, price, surface, dpe, loc, agency, first_seen, http_status = r
         out.append({
             "url": url, "source": source, "title": title or "",
             "price_eur": price, "surface_m2": surface, "dpe_energy": dpe,
             "location": loc or "", "agency": agency or "",
             "first_seen": first_seen or "",
             "price_per_m2": round(price / surface, 0) if surface else None,
+            "http_status": http_status,
             "alt_urls": [],
         })
     if not group_dups:
@@ -114,7 +115,8 @@ def fetch_candidates(db, min_surface=MIN_SURFACE, max_surface=MAX_SURFACE,
         items.sort(key=lambda x: x["first_seen"] or "")
         primary, alts = items[0], items[1:]
         primary["alt_urls"] = [
-            {"url": a["url"], "source": a["source"]} for a in alts
+            {"url": a["url"], "source": a["source"],
+             "http_status": a.get("http_status")} for a in alts
         ]
         merged.append(primary)
     return merged
@@ -133,6 +135,16 @@ def render_markdown(cands, n: int, title: str = None) -> str:
         "| # | Price | m² | €/m² | DPE | Town | Link |",
         "|---|-------|----|------|-----|------|------|",
     ]
+    def _vb(s):
+        """⚠ = we could NOT confirm this link is live.
+
+        SeLoger bot-walls automated liveness checks (HTTP 403), so its links can
+        point at withdrawn ads without us ever seeing it — the user clicked
+        straight into two 'Annonce supprimée' pages that way. The listing is
+        real stock, so it is flagged rather than hidden.
+        """
+        return " ⚠" if s in (403, 429) else ""
+
     for i, r in enumerate(rows, 1):
         town = r["location"] or "–"
         dpe = r["dpe_energy"] or "–"
@@ -142,22 +154,29 @@ def render_markdown(cands, n: int, title: str = None) -> str:
         # the row (all URLs kept — user requirement, never hide a link).
         if alt:
             extra = " · ".join(
-                f"[{a['source']}]({a['url']})" for a in alt[:3]
+                f"[{a['source']}{_vb(a.get('http_status'))}]({a['url']})" for a in alt[:3]
             )
             if len(alt) > 3:
                 extra += f" · +{len(alt)-3} more"
             lines.append(
                 f"| {i} | €{r['price_eur']:,} | {r['surface_m2']:,.0f} | "
                 f"**{r['price_per_m2']:,.0f}** | {dpe} | {town} | "
-                f"[{r['source']}]({link}) ⧉ {extra} |"
+                f"[{r['source']}{_vb(r.get('http_status'))}]({link}) ⧉ {extra} |"
             )
         else:
             lines.append(
                 f"| {i} | €{r['price_eur']:,} | {r['surface_m2']:,.0f} | "
-                f"**{r['price_per_m2']:,.0f}** | {dpe} | {town} | {link} |"
+                f"**{r['price_per_m2']:,.0f}** | {dpe} | {town} | "
+                f"{link}{_vb(r.get('http_status'))} |"
             )
     if not rows:
         lines.append("_(no listings match the criteria)_")
+    elif any(_vb(r.get("http_status")) for r in rows):
+        lines.append("")
+        lines.append("⚠ = this link was **not** confirmed live: the portal blocks "
+                     "automated liveness checks (SeLoger returns 403). The listing "
+                     "itself was seen in an active search; verify the ad before "
+                     "travelling.")
     lines.append("")
     return "\n".join(lines)
 
