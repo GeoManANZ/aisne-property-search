@@ -62,6 +62,37 @@ _, errs = validate_listing(
     {"url": "https://example.com/x/123", "source": "notasource", "price_eur": 50_000})
 check("unknown source rejected", any(e.startswith("reject") for e in errs))
 
+# land sold as a building is rejected — but a HOUSE that merely mentions land is
+# NOT. A bare keyword match flagged 17 real houses in dept 02 ("maison avec
+# terrain", "corps de ferme avec pâture", "MAISON EN OSSATURE BOIS"), and
+# matching 'étang' anywhere condemned three more ("Montgobert Longère, 7 pièces
+# 112 m², 2 hectares avec étang et bois" — a farmhouse; "Étang privé, verger…"
+# — a €269,900 dwelling). The rule tests the OBJECT of the sale instead, and
+# treats pond/wood/verger as amenities. Cases below are real dept-02 titles.
+for title, surface, want_reject in [
+    ("Terrain à vendre de 4 106,00 m² LIESSE NOTRE DAME (02)", 4106, True),
+    ("Terrain À Vendre", 1428, True),
+    ("Domaine Forestier 9,6 hectares", 96594, True),
+    ("Hutte de chasse", 15912, True),
+    ("Ensemble exceptionnel de deux étangs sur plus de 18 000 m²", 18073, True),
+    ("Terrain de loisirs avec bungalow", 40, True),
+    ("Montgobert Longère , 7 pièce(s) 112 m2, 2 Hectares avec étang et bois", 112, False),
+    ("Bazuel / Le Cateau 59360 - Longère avec chalet, sauna, jardin & étang", 120, False),
+    ("Étang privé, verger et cadre de vie exceptionnel", 140, False),
+    ("Maison avec grange et terrain de 900 m2", 900, False),
+    ("ancien corps de ferme avec pâture", 179, False),
+    ("MAISON EN OSSATURE BOIS", 160, False),   # 'bois' is material, not forest
+    ("Immeuble - 2900 m²", 2900, False),       # real large building, not land
+    ("", 70, False),                           # no title -> cannot tell -> keep
+]:
+    _, errs = validate_listing(
+        {"url": "https://www.lesiteimmo.com/acheter/maison-9pieces/x-02650/33556055",
+         "source": "lesiteimmo", "price_eur": 85_000, "surface_m2": surface,
+         "title": title})
+    got = any(e.startswith("reject") for e in errs)
+    check(f"land rule: {title[:32]!r} ({surface}m2) -> reject={want_reject}",
+          got is want_reject)
+
 
 # ---------------------------------------------------------------------------
 # Invariant 2: price-alert corroboration discards non-matching drops

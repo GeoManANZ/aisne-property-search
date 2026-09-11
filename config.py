@@ -56,6 +56,74 @@ INVESTMENT = {
 }
 
 # ---------------------------------------------------------------------------
+# Land sold as a "building" — high-precision object test
+# ---------------------------------------------------------------------------
+# The 1500 m² ceiling above is a blunt net: it catches huge land parcels but a
+# small plot ("Terrain à vendre de 800 m²") slips straight through it, while it
+# also cuts three GENUINE large immeubles (2,900 m² €1.2M, 1,880 m², 1,607 m²).
+#
+# So test what the sale's OBJECT is, not whether the word "terrain" appears.
+# Verified against dept-02 data 2026-09-10: a bare keyword match flagged 17 land
+# "leaks" that are all real houses — "maison avec terrain", "corps de ferme avec
+# pâture", "MAISON EN OSSATURE BOIS" (bois = material, not forest). Rejecting on
+# a keyword alone would have silently deleted 17 genuine listings.
+LAND_OBJECT_PATTERNS = (
+    # Unambiguous: land is named as the OBJECT of the sale.
+    r"^\s*terrains?\b", r"\bterrains?\s+à\s+vendre\b", r"\bterrains?\s+de\s+loisir\b",
+    r"\bdomaine forestier\b", r"\bhutte de chasse\b",
+    r"^\s*parcelles?\b", r"\bterres?\s+agricoles?\b", r"^\s*for[êe]t\b",
+)
+# Deliberately NOT land words: étang, bois, verger, pâture, prairie. Those are
+# AMENITIES that appear in real house listings — "Montgobert Longère, 7 pièces
+# 112 m², 2 hectares avec étang et bois" and "Bazuel - Longère ... avec chalet,
+# sauna, jardin arboré & étang" are farmhouses, and "Étang privé, verger..."
+# was a €269,900 dwelling. Land-with-pond is caught by the surface rule below
+# instead, which cannot misfire on a house. Verified on dept-02 data 2026-09-10.
+# If the title names a building, it IS a building whatever else it says.
+BUILDING_WORDS = (
+    r"\bmaison\b", r"\bimmeuble\b", r"\bappartement\b", r"\bpavillon\b",
+    r"\bpropriété\b", r"\bcorps de ferme\b", r"\bferme\b", r"\bmoulin\b",
+    r"\bchâteau\b", r"\bvilla\b", r"\bstudio\b", r"\bgarage\b", r"\bhangar\b",
+    r"\bloft\b", r"\bduplex\b", r"\blongère\b", r"\bchalet\b", r"\bmanoir\b",
+    r"\bgîte\b", r"\bdemeure\b", r"\bgrange\b", r"\bcorps de logis\b",
+)
+
+# Above this surface with no building word in the title, the sale is land
+# (ponds, forest, hunting land). Real LARGE buildings — "Immeuble 2900 m²",
+# "Immeuble 1880 m²", "Immeuble à vendre à GUISE" — all name their type, so
+# they survive; a bare "Ensemble exceptionnel de deux étangs sur 18 000 m²"
+# does not.
+LAND_SURFACE_CEILING_M2 = 1500
+
+import re as _re  # noqa: E402  (kept local to this block for readability)
+
+LAND_OBJECT_RE = _re.compile("|".join(LAND_OBJECT_PATTERNS), _re.I)
+BUILDING_WORD_RE = _re.compile("|".join(BUILDING_WORDS), _re.I)
+
+
+def is_land_not_building(title: str | None, surface_m2: float | None = None) -> bool:
+    """True when the listing's subject is land, not a building.
+
+    Two independent signals, both requiring the ABSENCE of a building word:
+      1. the title names land as the object ("Terrain à vendre", "Domaine
+         forestier", "Hutte de chasse");
+      2. the surface exceeds LAND_SURFACE_CEILING_M2 (ponds/forest/hunting
+         land) — real large buildings state their type in the title.
+
+    Any building word wins outright, so "maison avec terrain", "Longère avec
+    étang" and "MAISON EN OSSATURE BOIS" are never treated as land. Empty
+    titles return False rather than guessing.
+    """
+    t = (title or "").strip()
+    if t and BUILDING_WORD_RE.search(t):
+        return False
+    if t and LAND_OBJECT_RE.search(t):
+        return True
+    if surface_m2 and float(surface_m2) > LAND_SURFACE_CEILING_M2:
+        return True          # huge, unnamed = land (a named building returned above)
+    return False
+
+# ---------------------------------------------------------------------------
 # Price-alert guards
 # ---------------------------------------------------------------------------
 # A drop is reported only if it passes ALL of these (false-positive defence,

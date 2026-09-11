@@ -39,6 +39,52 @@ All sources now crawl BOTH immeuble + maison categories.
    terrain/forest as "maison" with land area in "surface habitable").
 5. Run `test_invariants.py` before ANY change to price extraction or validation:
    `.venv/bin/python test_invariants.py` (<2s, must exit 0).
+6. **Reports may only show LIVE listings.** `recommendations_report.py` filters
+   `COALESCE(status,'active')='active'`; `check_liveness.py` is what sets
+   `status='gone'`. Without the liveness pass, ads that sold months ago keep
+   resurfacing (the 2026-09-10 bug: 3,568 rows all 'active' forever, and users
+   clicked through to "Annonce supprimée").
+7. **A sale is a data point, not a lost lead.** When a listing leaves the market
+   it goes to `disposals` (days_on_market, €/m², town, evidence string) and
+   `listing_events` — never silently dropped.
+
+## Liveness & disposition (`check_liveness.py`)
+- Classifies each listing: `live` / `gone:sold` (`vendu`, `sous compromis`,
+  `sous offre`) / `gone:withdrawn` (`annonce supprimée`, `n'est plus disponible`)
+  / `gone:dead_url` (404/410) / `blocked` (403/429 bot wall).
+- `blocked` is NEVER treated as gone — a bot wall is not evidence either way.
+- Regex trap: match `\bvendu\b`, not bare `vendu`, or agency blurbs
+  ("honoraires vendeur") manufacture sales that never happened.
+- Baseline (2026-09-10, 543 reportable listings): 368 live, 104 blocked,
+  36 dead_url, 35 sold → 13.4% of stock was already dead.
+- **SeLoger cannot be verified by direct fetch** — it 403s, so its rows stay
+  `blocked` with possibly dead links. See the SeLoger verification section below.
+- Run: `.venv/bin/python check_liveness.py --all-criteria --quiet`
+  (direct egress, zero Webshare cost). Wired into the fortnightly sweep.
+
+## Sales / sold database (`ingest_dvf.py`, `sales_report.py`)
+- **`dvf_sales`** = official Etalab DVF notarial sales, geolocated, free, direct
+  egress: `files.data.gouv.fr/geo-dvf/latest/csv/<YEAR>/departements/<DEPT>.csv.gz`
+  (~0.8 MB/dept/year; years 2021-2025). Dept 02 = 150,470 raw rows.
+- **`dvf_buildings`** (one row per mutation/sale) and **`dvf_sales_clean`**
+  (building sales with €/m²) are MATERIALIZED TABLES rebuilt on ingest — not
+  views. Rebuild: `.venv/bin/python ingest_dvf.py --depts 02` (~4s).
+- **DVF double-count trap (this produced a wrong published number once):** one
+  mutation = many rows, one per local per `nature_culture`, each with the SAME
+  `valeur_fonciere` but a DIFFERENT `surface_terrain`. A `DISTINCT` over all
+  columns fails to collapse them → `SUM(surface_reelle_bati)` doubles (282 m²
+  instead of 141 m²) and €/m² is understated. Dedupe building rows WITHOUT
+  surface_terrain; aggregate land separately. Anchor: mutation `2024-12830`
+  must yield 141 m², 1 local, €273,000.
+- Interrogate: `.venv/bin/python sales_report.py --overview | --communes 12 |
+  --trend | --eur-m2 "Hirson" | --recent "Soissons" 5 | --vs-asking | --disposals`
+- `--vs-asking` compares OUR asking €/m² against ACHIEVED sold €/m² per commune.
+  Caveat: our stock is mostly large (≥150 m²) buildings needing work, so it sits
+  legitimately below the all-sales average. Rank towns against each other, don't
+  read the absolute gap as pure discount.
+- Town joins are normalised in Python (`norm_town`: accent-strip, drop postcode
+  and trailing dept code). Joining with LIKE on the first word produced nonsense
+  ("Saint" from "Saint-Quentin", "La" from "La Fère").
 
 ## Common commands
 ```bash

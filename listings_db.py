@@ -89,6 +89,9 @@ def _url_is_individual(url: str, source: str) -> bool:
     return True  # other sources: no strict rule
 
 
+from config import is_land_not_building  # noqa: E402  (script-style module)
+
+
 def validate_listing(item: dict) -> tuple[dict, list[str]]:
     """Sanity-check a parsed listing. Returns (cleaned_item, errors).
 
@@ -146,6 +149,14 @@ def validate_listing(item: dict) -> tuple[dict, list[str]]:
                              "&nbsp;", "document.getelementbyid")):
         errors.append("title is DOM/JS junk -> cleared")
         it["title"] = ""
+
+    # Land sold as a building — reject at the door (config.is_land_not_building).
+    # Runs AFTER the junk-title cleanup: a DOM-junk title would otherwise hide
+    # the land signal. Deliberately high-precision — any building word wins, so
+    # "maison avec terrain" is never dropped.
+    if is_land_not_building(it.get("title"), it.get("surface_m2")):
+        errors.append(f"reject: land/terrain sold as a building: {title[:60]!r}")
+        return it, errors
 
     # source must be known
     if source not in _VALID_SOURCES:
