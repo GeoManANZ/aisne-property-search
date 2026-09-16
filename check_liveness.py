@@ -80,7 +80,12 @@ CREATE TABLE IF NOT EXISTS disposals (
     source TEXT, town TEXT, postcode TEXT,
     price_eur REAL, surface_m2 REAL, eur_m2 REAL,
     first_seen TEXT, last_alive_at TEXT, gone_at TEXT, gone_reason TEXT,
-    days_on_market INTEGER, marker TEXT
+    days_on_market INTEGER, marker TEXT,
+    -- A disposal can be REVERSED: if the listing reappears in a later search
+    -- feed it is live again, so the "sale" was a false positive and must not be
+    -- counted (a 45,000 EUR "sold" record was exactly this on 2026-09-16).
+    -- Reversed rows stay for audit; stats exclude them.
+    reversed_at TEXT, reversed_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_disp_gone ON disposals(gone_at);
 CREATE INDEX IF NOT EXISTS ix_disp_town ON disposals(town);
@@ -101,6 +106,11 @@ def ensure_schema(db: sqlite3.Connection) -> None:
     for col, typ in NEW_COLS:
         if col not in have:
             db.execute(f"ALTER TABLE listings ADD COLUMN {col} {typ}")
+    # Migration: DBs created before disposal-reversal support.
+    dcols = {r[1] for r in db.execute("PRAGMA table_info(disposals)")}
+    for col in ("reversed_at", "reversed_reason"):
+        if col not in dcols:
+            db.execute(f"ALTER TABLE disposals ADD COLUMN {col} TEXT")
 
 
 def probe(url: str, timeout: int = 25) -> dict:

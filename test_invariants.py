@@ -93,6 +93,27 @@ for title, surface, want_reject in [
     check(f"land rule: {title[:32]!r} ({surface}m2) -> reject={want_reject}",
           got is want_reject)
 
+# ParuVendu puts the LAND area in the size field while the title carries the real
+# building surface, which ranked a 90 m² house at EUR30/m² above genuine 150 m²+
+# stock. Only the card shape may override, and only on a >1.5x discrepancy — a
+# marketing title that mentions a garage must never overwrite the house.
+# Every case below is a real dept-02 row.
+for title, surface, want_surface in [
+    ("Maison - 3 pièce(s) - 90 m²", 1635, 90),
+    ("Immeuble - 10 pièce(s) - 250 m²", 923, 250),
+    ("Maison - 4 pièce(s) - 82 m²", 400, 82),
+    ("Maison 143m2, 5 pièces, 3 chambres avec un Garage 45 m²", 143, 143),
+    ("Proche Nogent-L'Artaud (8min) Chezy-Sur-Marne", 198, 198),
+    ("Maison - 5 pièce(s) - 118 m²", 119, 119),   # no discrepancy -> untouched
+    ("Immeuble - 2900 m²", 2900, 2900),
+]:
+    it, _ = validate_listing(
+        {"url": "https://www.paruvendu.fr/immobilier/vente/maison/1289084457A1KIVHMN000",
+         "source": "paruvendu", "price_eur": 60_000, "surface_m2": surface,
+         "title": title})
+    check(f"surface rule: {title[:30]!r} {surface:g} -> {want_surface:g}",
+          it.get("surface_m2") == want_surface)
+
 
 # ---------------------------------------------------------------------------
 # Invariant 2: price-alert corroboration discards non-matching drops

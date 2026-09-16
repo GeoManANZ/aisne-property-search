@@ -27,10 +27,14 @@ scrapes don't deadlock.
 """
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from pathlib import Path
 from datetime import datetime, timezone
+
+
+from config import is_land_not_building  # noqa: E402  (script-style module)
 
 
 # Columns shared by every upsert.  All are optional; only `url` is required.
@@ -89,9 +93,6 @@ def _url_is_individual(url: str, source: str) -> bool:
     return True  # other sources: no strict rule
 
 
-from config import is_land_not_building  # noqa: E402  (script-style module)
-
-
 def validate_listing(item: dict) -> tuple[dict, list[str]]:
     """Sanity-check a parsed listing. Returns (cleaned_item, errors).
 
@@ -133,6 +134,32 @@ def validate_listing(item: dict) -> tuple[dict, list[str]]:
             errors.append(f"surface_m2 {s} out of range -> None")
             s = None
         it["surface_m2"] = s
+
+    # Title-declared surface vs the size field.  ParuVendu cards put the LAND
+    # area in the size field while the title states the real building surface
+    # ("Maison - 3 pièce(s) - 90 m²" was stored as 1,635 m²). That inverted the
+    # ranking — a 90 m² house read as EUR30/m² and outranked genuine 150 m²+
+    # stock, when it should not pass a >=150 m² criteria at all.
+    # Scoped deliberately: the ParuVendu card shape is
+    # "Maison - 3 pièce(s) - 90 m²" — a DASH separates the room count from the
+    # surface, and that dash is what keeps long marketing titles safe.
+    # A looser "first m² after the word pièce" rule overwrote a correct 143 m²
+    # with the garage's 45 m² in "Maison 143m2, 5 pièces, 3 chambres avec un
+    # Garage 45 m²" — caught by re-auditing the repair itself, so the dash is
+    # required and the override only fires on a >1.5x discrepancy.
+    m = re.search(
+        r"\bpi[eè]ces?\s*(?:\(\s*s\s*\))?\s*[-–—]\s*(\d{2,4})(?:[.,]\d+)?\s*m\s*[²2]\b",
+        it.get("title") or "", re.I)
+    if m and it.get("surface_m2"):
+        try:
+            t_surf = float(m.group(1))
+        except ValueError:
+            t_surf = 0.0
+        if t_surf >= 20 and it["surface_m2"] / t_surf >= 1.5:
+            errors.append(
+                f"surface_m2 {it['surface_m2']:.0f} looks like the LAND area; "
+                f"title states {t_surf:.0f} m² -> using the title")
+            it["surface_m2"] = t_surf
 
     # DPE sanity
     dpe = it.get("dpe_energy")
@@ -230,6 +257,17 @@ class ListingsDB:
         c.execute("CREATE INDEX IF NOT EXISTS idx_listings_status ON listings(status)")
         c.commit()
 
+    def _has_table(self, name: str) -> bool:
+        return bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,)).fetchone())
+
+    def _has_col(self, table: str, col: str) -> bool:
+        try:
+            return any(r[1] == col for r in self.conn.execute(f"PRAGMA table_info({table})"))
+        except sqlite3.Error:
+            return False
+
     def upsert_listing(self, *, url: str, source=None, title=None, price_eur=None,
                        surface_m2=None, dpe_energy=None, location=None,
                        agency=None, description=None, features=None, tags=None,
@@ -276,8 +314,32 @@ class ListingsDB:
              first_seen, now, now, status),
         )
 
-        # Status transition → also log to price_history when a listing goes
-        # gone/sold? No — that table is price-only.  Keep it simple.
+        # --- disposition reconciliation ------------------------------------
+        # Re-appearing in a search feed means the listing is live again (portals
+        # re-list the same URL). Re-activating MUST also clear the stale
+        # gone_at/gone_reason and reverse the recorded disposal, or the row
+        # contradicts itself: active + gone_at set, and a "sold" record for a
+        # property that is back on the market. Found 2026-09-16 after a full
+        # sweep silently re-activated 5 rows that the liveness pass had marked
+        # sold/dead_url on 2026-09-10 (one was a false "sold" at EUR45,000).
+        if prev_status in ("gone", "invalid") and status == "active":
+            self.conn.execute(
+                "UPDATE listings SET gone_at=NULL, gone_reason=NULL WHERE url=?",
+                (url,))
+            if self._has_table("disposals") and self._has_col("disposals", "reversed_at"):
+                self.conn.execute(
+                    "UPDATE disposals SET reversed_at=?, reversed_reason=?"
+                    " WHERE url=? AND reversed_at IS NULL",
+                    (now, "reappeared in search feed", url))
+            if self._has_table("listing_events"):
+                self.conn.execute(
+                    "INSERT INTO listing_events (url, source, observed_at, event, note)"
+                    " VALUES (?,?,?,?,?)",
+                    (url, source, now, "restored",
+                     f"back in feed (was '{prev_status}') — stale gone_at cleared,"
+                     f" disposal reversed"))
+
+        self.conn.commit()
 
         # Price-change logging.  Log the initial price on first insert too,
         # so price_drops() can compare against a real prior value.
