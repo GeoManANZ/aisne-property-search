@@ -30,14 +30,25 @@ from engine_metrics import record_outcome
 SELOGER_DOMAIN = "www.seloger.com"
 _DEP = config.DEFAULT_DEPARTMENT
 BASE_URL = config.seloger_serp_url(_DEP)
-CRITERIA = {
-    "estateSubTypes": [], "portals": ["SL"], "furnished": [],
-    "featuresIncluded": [], "projectTypes": ["New_Build", "Resale"],
-    "buildState": [], "locationsInBuildingIncluded": [],
-    "locationsInBuildingExcluded": [], "energyCertificateClass": [],
-    "distributionTypes": ["Buy"], "estateTypes": ["Building"],
-    "location": {"placeIds": [_DEP["place_id"]]}, "texts": [],
-}
+def build_criteria(estate_type: str = "Building") -> dict:
+    """SeLoger BFF search model.
+
+    estateTypes accepts ONE value per request, so a portal-wide sweep needs a
+    separate pass per property type. Building-only coverage (the historical
+    setting) meant maison contributed 4 rows out of 368 on this portal — the
+    entire house market was invisible here.
+    """
+    return {
+        "estateSubTypes": [], "portals": ["SL"], "furnished": [],
+        "featuresIncluded": [], "projectTypes": ["New_Build", "Resale"],
+        "buildState": [], "locationsInBuildingIncluded": [],
+        "locationsInBuildingExcluded": [], "energyCertificateClass": [],
+        "distributionTypes": ["Buy"], "estateTypes": [estate_type],
+        "location": {"placeIds": [_DEP["place_id"]]}, "texts": [],
+    }
+
+
+CRITERIA = build_criteria()  # default (Building), kept for import compatibility
 
 
 def card_to_listing(c: dict) -> dict:
@@ -207,7 +218,14 @@ def main():
     # need the HTML+JS (to earn the DataDome cookie) plus the JSON API.
     ap.add_argument("--no-block-assets", action="store_true",
                     help="do not abort image/media/font requests (debugging only)")
+    # estateTypes takes one value per BFF request: run twice for full coverage
+    # (Building + House). Each pass is ~2 MB of metered proxy.
+    ap.add_argument("--estate-type", default="Building",
+                    choices=["Building", "House", "Apartment", "Townhouse"],
+                    help="SeLoger estateTypes value for this pass")
     args = ap.parse_args()
+    criteria = build_criteria(args.estate_type)
+    print(f"estateTypes=[{args.estate_type}]", flush=True)
     outdir = Path(args.outdir)
     outdir.mkdir(exist_ok=True)
 
@@ -311,7 +329,7 @@ def main():
                 # ---- API sweep from inside the browser context ----
                 total = None
                 for pnum in range(1, args.max_pages + 1):
-                    payload = {"criteria": CRITERIA,
+                    payload = {"criteria": criteria,
                                "paging": {"page": pnum, "size": 30, "order": "Default"}}
                     try:
                         resp = page.evaluate(
