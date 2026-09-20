@@ -46,6 +46,8 @@ def main() -> int:
     ap.add_argument("--db", default=str(HERE / "listings.db"))
     ap.add_argument("--top", type=int, default=10)
     ap.add_argument("--lane", default=None, help="yield|renovation|livein|commercial")
+    ap.add_argument("--no-header", action="store_true",
+                    help="suppress the summary header (used when concatenating per-lane runs)")
     args = ap.parse_args()
 
     con = conn(args.db)
@@ -120,12 +122,13 @@ def main() -> int:
     lanes: dict[str, int] = {}
     for i in items:
         lanes[i["cat"]] = lanes.get(i["cat"], 0) + 1
-    print(f"# Categorised briefs — top {args.top} by €/m² ({len(items)} candidates)")
-    print(f"**Date:** {now:%Y-%m-%d %H:%M} UTC · lanes: "
-          + " · ".join(f"{k} {v}" for k, v in sorted(lanes.items(), key=lambda x: -x[1])))
-    print(f"**Peer medians (this criteria set):** "
-          + " · ".join(f"{k} €{v:,.0f}/m²" for k, v in bench.items() if k != "_all"))
-    print()
+    if not args.no_header:
+        print(f"# Categorised briefs — top {args.top} by €/m² ({len(items)} candidates)")
+        print(f"**Date:** {now:%Y-%m-%d %H:%M} UTC · lanes: "
+              + " · ".join(f"{k} {v}" for k, v in sorted(lanes.items(), key=lambda x: -x[1])))
+        print(f"**Peer medians (this criteria set):** "
+              + " · ".join(f"{k} €{v:,.0f}/m²" for k, v in bench.items() if k != "_all"))
+        print()
 
     for n, i in enumerate(items[:args.top], 1):
         b = bench.get(i["cat"], bench["_all"])

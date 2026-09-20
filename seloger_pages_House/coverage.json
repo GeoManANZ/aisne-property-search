@@ -1,8 +1,12 @@
 {
  "estate_type": "House",
+ "distribution_type": "Buy",
  "total_reported": 3220,
- "fetched": 2998,
- "complete": false,
- "pages": 130,
- "at": "2026-09-20T13:47:37+00:00"
+ "fetched": 3218,
+ "shortfall": 2,
+ "exhausted_pagination": true,
+ "complete": true,
+ "pages": 110,
+ "start_page": 109,
+ "at": "2026-09-20T13:50:08+00:00"
 }

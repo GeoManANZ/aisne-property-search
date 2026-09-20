@@ -264,6 +264,7 @@ def main():
             print(f"MERGE: carrying {len(listings)} listings from the previous pass",
                   flush=True)
     total = None
+    exhausted = False
     # Bandwidth meter: the residential proxy is METERED (1 GB/month), so every
     # sweep prints what it actually cost instead of us guessing.
     bw = {"page": 0, "api": 0, "reqs": 0, "blocked": 0}
@@ -382,6 +383,12 @@ def main():
                     ids = [c.get("id") for c in resp.get("classifieds", []) if c.get("id")]
                     print(f"  page {pnum}: {len(ids)} ids (total {total})", flush=True)
                     if not ids:
+                        # Reached the end of pagination. THIS, not equality with
+                        # totalCount, is what proves the result set was fully
+                        # enumerated: totalCount drifts between page requests as ads
+                        # appear and expire, so a pass can legitimately finish 2 ads
+                        # short of a total it was told 8 requests ago.
+                        exhausted = True
                         break
                     # batches of 30: one request per page instead of 20+10
                     new = 0
@@ -451,18 +458,31 @@ def main():
     # otherwise "not in the sweep" just means "we stopped paginating" and would
     # mark live stock as sold. (The immeuble pass is complete; the maison pass
     # deliberately samples 270 of ~3,190.)
+    fetched = len(listings)
+    shortfall = (total - fetched) if total else 0
+    # Complete = we reached the END of pagination AND the shortfall against the
+    # API's own count is negligible. totalCount drifts between page requests as ads
+    # appear and expire mid-pass, so exact equality is unachievable; demanding it
+    # left a 3218/3220 pass unusable. A mid-pass null response (never reached the
+    # end) still counts as incomplete — that is the failure this must catch.
+    COVERAGE_TOLERANCE = 0.005
+    complete = bool(exhausted and total and fetched >= total * (1 - COVERAGE_TOLERANCE))
     coverage = {
         "estate_type": args.estate_type,
+        "distribution_type": args.distribution_type,
         "total_reported": total,
-        "fetched": len(listings),
-        "complete": bool(total is not None and len(listings) >= total),
+        "fetched": fetched,
+        "shortfall": shortfall,
+        "exhausted_pagination": exhausted,
+        "complete": complete,
         "pages": args.max_pages,
+        "start_page": args.start_page,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     (outdir / "coverage.json").write_text(json.dumps(coverage, indent=1),
                                           encoding="utf-8")
-    print(f"COVERAGE: estateTypes={args.estate_type} fetched={len(listings)} "
-          f"of {total} → complete={coverage['complete']}")
+    print(f"COVERAGE: estateTypes={args.estate_type} fetched={fetched} of {total} "
+          f"(shortfall {shortfall}) exhausted={exhausted} → complete={complete}")
     tot = bw["page"] + bw["api"]
     print(f"BANDWIDTH: page={bw['page']/1e6:.2f} MB + api={bw['api']/1e6:.2f} MB "
           f"= {tot/1e6:.2f} MB via the metered proxy "

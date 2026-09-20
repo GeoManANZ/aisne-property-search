@@ -1,0 +1,12 @@
+{
+ "estate_type": "House",
+ "distribution_type": "Rent",
+ "total_reported": null,
+ "fetched": 0,
+ "shortfall": 0,
+ "exhausted_pagination": true,
+ "complete": false,
+ "pages": 15,
+ "start_page": 1,
+ "at": "2026-09-20T13:52:18+00:00"
+}
