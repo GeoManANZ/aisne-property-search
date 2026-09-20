@@ -40,7 +40,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 HERE = Path(__file__).parent
-DEFAULT_DIRS = ["seloger_pages_Building", "seloger_pages_House", "seloger_pages"]
+# Strikes may only be applied when EVERY pass in the required set is complete. A
+# complete Building (immeuble) pass says NOTHING about maisons, so treating its
+# absences as evidence would strike every house in the database. Absence is only
+# evidence against the estate type that pass actually enumerated.
+REQUIRED_DIRS = ["seloger_pages_Building", "seloger_pages_House"]
+LEGACY_DIRS = ["seloger_pages"]
 MAX_AGE_HOURS = 36       # a stale pass describes a market that has moved on
 STRIKES_TO_GONE = 2
 
@@ -51,7 +56,10 @@ def load_pass(d: Path, max_age_hours: float) -> tuple[set[str], str, list[str]]:
     json_f = d / "all_listings_api.json"
     problems: list[str] = []
     if not cov_f.exists() or not json_f.exists():
-        return set(), f"{d.name}: no coverage/JSON", [f"{d.name}: incomplete artefacts"]
+        # NOTE must stay empty here: the caller counts non-empty notes as
+        # "complete pass available". Returning a message in the note slot made a
+        # missing pass count as present and the refusal gate never fired.
+        return set(), "", [f"{d.name}: no coverage.json/all_listings_api.json"]
     cov = json.loads(cov_f.read_text())
     age_h = (datetime.now(timezone.utc)
              - datetime.fromisoformat(cov["at"])).total_seconds() / 3600
@@ -78,7 +86,7 @@ def main() -> int:
     ap.add_argument("--max-age-hours", type=float, default=MAX_AGE_HOURS)
     args = ap.parse_args()
 
-    dirs = [Path(p) for p in (args.dir or DEFAULT_DIRS)]
+    dirs = [Path(p) for p in (args.dir or REQUIRED_DIRS)]
     dirs = [p if p.is_absolute() else HERE / p for p in dirs]
 
     con = sqlite3.connect(args.db)
@@ -102,9 +110,11 @@ def main() -> int:
     for p in problems:
         print(f"  ! {p}")
 
-    if not notes:
-        print("REFUSED: no complete, fresh sweep pass available — "
-              "auto-marking would produce false removals. Nothing written.")
+    expected = len(dirs)
+    if len(notes) < expected:
+        print(f"REFUSED: only {len(notes)}/{expected} required passes are complete and "
+              f"fresh. Striking listings from a partially-covered sweep would mark live "
+              f"stock as removed. Nothing written.")
         return 2
 
     print("\n".join(f"  {n}" for n in notes))
