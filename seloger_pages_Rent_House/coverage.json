@@ -4,9 +4,9 @@
  "total_reported": null,
  "fetched": 0,
  "shortfall": 0,
- "exhausted_pagination": true,
+ "exhausted_pagination": false,
  "complete": false,
- "pages": 15,
+ "pages": 8,
  "start_page": 1,
- "at": "2026-09-20T13:52:18+00:00"
+ "at": "2026-09-20T14:05:40+00:00"
 }

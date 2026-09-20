@@ -1,23 +1,15 @@
-# Aisne property pipeline — overnight run 2026-09-20 13:52 UTC
+# Aisne property pipeline — overnight run 2026-09-20 13:54 UTC
 
-## Lane distribution (all active listings)
-  commercial      735  (8%)
+## Lanes (criteria set: >=150m2, <=1500m2, EUR10k-220k)
 
 === lanes among the >=150 m2, EUR10k-220k criteria set ===
   livein          417 rows   avg €170,146   avg €939/m²
-  renovation      231 rows   avg €136,696   avg €704/m²
+  renovation      228 rows   avg €138,037   avg €712/m²
   yield           192 rows   avg €148,640   avg €686/m²
   commercial      100 rows   avg €156,037   avg €815/m²
   unclassified     56 rows   avg €167,524   avg €961/m²
 
-## Criteria-set lanes
-  livein         417 rows  avg EUR170,146  avg EUR939.0/m2  avg 202.0m2
-  renovation     231 rows  avg EUR136,696  avg EUR704.0/m2  avg 236.0m2
-  yield          192 rows  avg EUR148,640  avg EUR686.0/m2  avg 242.0m2
-  commercial     100 rows  avg EUR156,037  avg EUR815.0/m2  avg 219.0m2
-  unclassified    56 rows  avg EUR167,524  avg EUR961.0/m2  avg 176.0m2
-
-## YIELD — income assets
+## YIELD — income assets (best 4)
 **1. [YIELD·high] Liesse-Notre-Dame (02350) — €30,000 · 350 m² · €86/m²**
    Income asset — value is the rent roll, not the finish (multi-unit / let-able / commercial income).
    advert says: 'immeuble de rapport'; 'investisseur'; 'immeuble'
@@ -45,32 +37,34 @@
    https://www.paruvendu.fr/immobilier/vente/immeuble/1291807349A1KIVHIM000
 
 Benchmarks are medians of this same criteria set — not asking prices of unrelated stock, and not estimates.
-## RENOVATION — works projects
-**1. [RENOVATION·low] Frières-Faillouël 02700 — €26,000 · 1,275 m² · €20/m²**
-   Works project — the price reflects the condition; budget acquisition + works + time.
-   DPE not stated · on market 0d · -97% vs renovation peer median
-   https://www.seloger.com/279622603/detail.htm
-
-**2. [RENOVATION·low] Ribemont 02240 — €34,900 · 1,000 m² · €35/m²**
-   Works project — the price reflects the condition; budget acquisition + works + time.
-   DPE not stated · on market 0d · -95% vs renovation peer median
-   https://www.seloger.com/243504133/detail.htm
-
-**3. [RENOVATION·medium] La Bouteille 02140 — €95,200 · 1,354 m² · €70/m²**
+## RENOVATION — works projects (best 4)
+**1. [RENOVATION·medium] La Bouteille 02140 — €95,200 · 1,354 m² · €70/m²**
    Works project — the price reflects the condition; budget acquisition + works + time.
    advert says: 'DPE F'
    DPE F · on market 0d · -90% vs renovation peer median
    https://www.seloger.com/276630949/detail.htm
 
-**4. [RENOVATION·high] Orbais-l'Abbaye (51270) — €24,000 · 340 m² · €71/m²**
+**2. [RENOVATION·high] Orbais-l'Abbaye (51270) — €24,000 · 340 m² · €71/m²**
    Works project — the price reflects the condition; budget acquisition + works + time.
    advert says: 'à rénover'; 'non équipée'; 'à aménager'
    also: yield (secondary lane)
    DPE not stated · on market 29d · -90% vs renovation peer median
    https://www.lesiteimmo.com/acheter/maison-4pieces/orbais-l-abbaye-51270/31657489
 
+**3. [RENOVATION·low] Esquéhéries 02170 — €75,000 · 1,032 m² · €73/m²**
+   Works project — the price reflects the condition; budget acquisition + works + time.
+   advert says: 'ancien'
+   DPE not stated · on market 0d · -90% vs renovation peer median
+   https://www.seloger.com/244625657/detail.htm
+
+**4. [RENOVATION·medium] Épaux-Bézu 02400 — €45,000 · 597 m² · €75/m²**
+   Works project — the price reflects the condition; budget acquisition + works + time.
+   advert says: 'à rénover'
+   DPE not stated · on market 0d · -89% vs renovation peer median
+   https://www.seloger.com/268383063/detail.htm
+
 Benchmarks are medians of this same criteria set — not asking prices of unrelated stock, and not estimates.
-## LIVE-IN — habitable homes
+## LIVE-IN — habitable homes (best 3)
 **1. [LIVEIN·low] Audigny 02120 — €136,800 · 1,455 m² · €94/m²**
    Habitable home — move in or light cosmetic work.
    advert says: 'DPE D'
@@ -90,7 +84,7 @@ Benchmarks are medians of this same criteria set — not asking prices of unrela
    https://www.seloger.com/277967857/detail.htm
 
 Benchmarks are medians of this same criteria set — not asking prices of unrelated stock, and not estimates.
-## COMMERCIAL — non-housing
+## COMMERCIAL — non-housing (best 3)
 **1. [COMMERCIAL·medium] Hirson 02500 — €44,000 · 400 m² · €110/m²**
    Non-housing — warehouse/commercial premises. Different buyer pool, different financing, own exit risk.
    advert says: 'hangar'
