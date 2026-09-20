@@ -199,7 +199,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--outdir", default="seloger_pages")
     ap.add_argument("--max-pages", type=int, default=9)
-    ap.add_argument("--sessions", type=int, default=8)
+    # Sessions are RETRIES, not parallelism: the loop breaks after the first
+    # session that returns listings, so a high default only costs bandwidth when
+    # a session gets flagged. 8 page loads of retry budget was pure waste.
+    ap.add_argument("--sessions", type=int, default=3)
+    # Bandwidth: images/media/fonts are ~most of the SERP page weight and we only
+    # need the HTML+JS (to earn the DataDome cookie) plus the JSON API.
+    ap.add_argument("--no-block-assets", action="store_true",
+                    help="do not abort image/media/font requests (debugging only)")
     args = ap.parse_args()
     outdir = Path(args.outdir)
     outdir.mkdir(exist_ok=True)
@@ -211,6 +218,19 @@ def main():
 
     listings = []
     seen = set()
+    # Bandwidth meter: the residential proxy is METERED (1 GB/month), so every
+    # sweep prints what it actually cost instead of us guessing.
+    bw = {"page": 0, "api": 0, "reqs": 0, "blocked": 0}
+
+    def _page_bytes(pg):
+        """Bytes actually transferred by the page (images, JS, XHR) — the real
+        cost of loading the SERP through the proxy."""
+        try:
+            return pg.evaluate(
+                "() => performance.getEntriesByType('resource')"
+                ".reduce((s,e)=>s+(e.transferSize||0),0)")
+        except Exception:
+            return 0
 
     for session in range(1, args.sessions + 1):
         proxy_url = webshare_rotate_url(session=session, country="fr", host_idx=0)
@@ -221,8 +241,14 @@ def main():
         fp = build_fingerprint()
         print(f"=== session fr-{session} ({fp['user_agent'][:30]}...) ===", flush=True)
         t0 = time.time()
+        # geoip=False ON PURPOSE: geoip=True makes Camoufox resolve the proxy's
+        # location via ipecho.net, and when that lookup is unreachable the launch
+        # fails outright — "InvalidIP: Failed to get IP address" — so NO session
+        # ever ran. That is why SeLoger sat 26 days stale (last data 2026-08-21)
+        # while the script looked healthy. Locale and timezone are already pinned
+        # explicitly on the context below, so the lookup buys nothing that matters.
         launch = {"headless": True, "locale": fp["locale"], "humanize": True,
-                  "geoip": True, "proxy": {"server": proxy_url}}
+                  "geoip": False, "proxy": {"server": proxy_url}}
         try:
             with Camoufox(**launch) as browser:
                 ctx = browser.new_context(locale=fp["locale"], timezone_id=fp["timezone_id"],
@@ -237,6 +263,25 @@ def main():
                     except Exception as e:
                         print(f"  cookie inject failed: {type(e).__name__}", flush=True)
                 page = ctx.new_page()
+                if not args.no_block_assets:
+                    # Abort image/media/font at the network layer: they are most
+                    # of the SERP page weight and we only need HTML+JS (to earn
+                    # the DataDome cookie) plus the JSON API. Everything else
+                    # (document, script, xhr, fetch, stylesheet) still loads, so
+                    # the challenge behaves exactly as before.
+                    def _block(route):
+                        try:
+                            if route.request.resource_type in ("image", "media", "font"):
+                                bw["blocked"] += 1
+                                route.abort()
+                            else:
+                                route.continue_()
+                        except Exception:  # noqa: BLE001
+                            try:
+                                route.continue_()
+                            except Exception:  # noqa: BLE001
+                                pass
+                    page.route("**/*", _block)
                 ok = False
                 for attempt in range(3):
                     try:
@@ -258,6 +303,10 @@ def main():
                                    timing_s=time.time() - t0, proxy_ip=session_key,
                                    error="challenge/flagged page")
                     continue
+
+                bw["page"] += _page_bytes(page)
+                print(f"  page load: {bw['page']/1e6:.2f} MB transferred "
+                      f"({bw['blocked']} asset requests blocked)", flush=True)
 
                 # ---- API sweep from inside the browser context ----
                 total = None
@@ -281,15 +330,17 @@ def main():
                     if not resp:
                         print(f"  page {pnum}: null response", flush=True)
                         break
+                    bw["api"] += len(json.dumps(resp, default=str))
+                    bw["reqs"] += 1
                     total = resp.get("totalCount") or total
                     ids = [c.get("id") for c in resp.get("classifieds", []) if c.get("id")]
                     print(f"  page {pnum}: {len(ids)} ids (total {total})", flush=True)
                     if not ids:
                         break
-                    # fetch full cards in batches of 20
+                    # batches of 30: one request per page instead of 20+10
                     new = 0
-                    for i in range(0, len(ids), 20):
-                        batch = ids[i:i+20]
+                    for i in range(0, len(ids), 30):
+                        batch = ids[i:i+30]
                         try:
                             cards = page.evaluate(
                                 """async (ids) => {
@@ -307,6 +358,8 @@ def main():
                         if not cards:
                             print(f"  batch null — skipping", flush=True)
                             continue
+                        bw["api"] += len(json.dumps(cards, default=str))
+                        bw["reqs"] += 1
                         for c in cards:
                             if not isinstance(c, dict):
                                 continue
@@ -346,6 +399,10 @@ def main():
     out = outdir / "all_listings_api.json"
     out.write_text(json.dumps(listings, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nSaved {len(listings)} unique listings → {out}")
+    tot = bw["page"] + bw["api"]
+    print(f"BANDWIDTH: page={bw['page']/1e6:.2f} MB + api={bw['api']/1e6:.2f} MB "
+          f"= {tot/1e6:.2f} MB via the metered proxy "
+          f"({bw['reqs']} API calls, {bw['blocked']} asset requests blocked)")
     try:
         from listings_db import ListingsDB
         db = ListingsDB(Path(__file__).parent / "listings.db")
