@@ -77,12 +77,14 @@ def main() -> int:
               AND gone_at >= datetime('now','-{d} day') GROUP BY 1 ORDER BY 2 DESC"""):
         print(f"  {r['gone_reason']:<11} {r['n']:<4} avg €{r['ap'] or 0:,.0f} "
               f"({r['am'] or 0:.0f} €/m²)")
-    print("  --- individual exits (price / m² at exit / evidence) ---")
+    print("  --- individual exits (real sales first, then withdrawals, then dead ads) ---")
     for r in con.execute(f"""
             SELECT gone_at, gone_reason, source, town, price_eur, surface_m2, eur_m2, marker
             FROM disposals WHERE reversed_at IS NULL
               AND gone_at >= datetime('now','-{d} day')
-            ORDER BY gone_reason, gone_at DESC LIMIT {args.top}"""):
+            ORDER BY CASE gone_reason WHEN 'sold' THEN 0 WHEN 'withdrawn' THEN 1
+                                      ELSE 2 END, gone_at DESC
+            LIMIT {args.top}"""):
         print(f"    {(r['gone_at'] or '')[:10]} {r['gone_reason']:<10} "
               f"{(r['town'] or '')[:20]:<20} €{r['price_eur'] or 0:>7,.0f} "
               f"{r['surface_m2'] or 0:>5.0f}m² €{r['eur_m2'] or 0:>5,.0f}/m²  "

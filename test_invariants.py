@@ -76,6 +76,15 @@ for title, surface, want_reject in [
     ("Hutte de chasse", 15912, True),
     ("Ensemble exceptionnel de deux étangs sur plus de 18 000 m²", 18073, True),
     ("Terrain de loisirs avec bungalow", 40, True),
+    # The anchored `^terrain` pattern only caught land titles that STARTED with
+    # the land word, and `loisir\b` never matched the plural. Portals put the
+    # commune first, so both holes hit simultaneously on the real title below —
+    # which reached #1 of the recommendations at €37/m² on 2026-09-20.
+    ("ORVILLERS SOREL (60) - Terrain de loisirs - 594m²", 594, True),
+    ("Terrain de loisirs 594m2", 594, True),
+    ("Ressons-sur-Matz (60490) - Terrain 800 m²", 800, True),
+    ("Rouvroy - Parcelle cadastrale 1 250 m²", 1250, True),
+    ("ORVILLERS SOREL (60) - Terrains de loisirs - 594m²", 594, True),
     ("Montgobert Longère , 7 pièce(s) 112 m2, 2 Hectares avec étang et bois", 112, False),
     ("Bazuel / Le Cateau 59360 - Longère avec chalet, sauna, jardin & étang", 120, False),
     ("Étang privé, verger et cadre de vie exceptionnel", 140, False),

@@ -69,7 +69,20 @@ INVESTMENT = {
 # a keyword alone would have silently deleted 17 genuine listings.
 LAND_OBJECT_PATTERNS = (
     # Unambiguous: land is named as the OBJECT of the sale.
-    r"^\s*terrains?\b", r"\bterrains?\s+à\s+vendre\b", r"\bterrains?\s+de\s+loisir\b",
+    r"^\s*terrains?\b", r"\bterrains?\s+à\s+vendre\b",
+    # `loisir\b` never matched "Terrain de LOISIRS" — the plural's "s" kills the
+    # word boundary. That single character put a 594 m² leisure plot at #1 of the
+    # recommendations at €37/m² (ORVILLERS SOREL 2026-09-20).
+    r"\bterrains?\s+de\s+loisirs?\b",
+    # Portal titles prefix the commune before the object — "ORVILLERS SOREL (60) -
+    # Terrain de loisirs - 594m²" — so an ANCHORED `^terrain` pattern silently
+    # misses exactly the listings a user searches by town. These unanchored forms
+    # name land as the object; a building word anywhere still wins outright, so
+    # "Maison avec terrain" stays a house.
+    r"\bterrains?\s+(?:constructibles?|à\s+bâtir|agricoles?|de\s+chasse|de\s+camping|naturels?|de\s+loisirs?|de\s+pêche|de\s+jeux)\b",
+    r"\bterrains?\s*[-–—]?\s*\d",
+    r"\bparcelles?\s+(?:cadastrales?|\d)",
+    r"\bfor[êe]ts?\s+(?:de\s+)?\d",
     r"\bdomaine forestier\b", r"\bhutte de chasse\b",
     r"^\s*parcelles?\b", r"\bterres?\s+agricoles?\b", r"^\s*for[êe]t\b",
 )
