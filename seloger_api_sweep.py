@@ -223,8 +223,18 @@ def main():
     ap.add_argument("--estate-type", default="Building",
                     choices=["Building", "House", "Apartment", "Townhouse"],
                     help="SeLoger estateTypes value for this pass")
+    # Probe/limit support: merged into the search criteria verbatim. Used to ask
+    # the BFF whether it can filter on price/surface — if it can, complete
+    # coverage costs a handful of pages instead of ~107 (~30 MB of proxy).
+    ap.add_argument("--extra-criteria", default=None,
+                    help='JSON merged into "criteria", e.g. \'{"priceRange":{"min":10000,"max":220000}}\'')
     args = ap.parse_args()
     criteria = build_criteria(args.estate_type)
+    if args.extra_criteria:
+        import json as _json
+        extra = _json.loads(args.extra_criteria)
+        criteria.update(extra)
+        print(f"CRITERIA OVERRIDE: +{list(extra)}", flush=True)
     print(f"estateTypes=[{args.estate_type}]", flush=True)
     outdir = Path(args.outdir)
     outdir.mkdir(exist_ok=True)
@@ -445,6 +455,15 @@ def main():
         db = ListingsDB(Path(__file__).parent / "listings.db")
         accepted, rejected = db.bulk_upsert_validated(listings)
         print(f"DB upsert: {accepted} accepted, {rejected} rejected (total {db.count()})")
+        # Persist SeLoger's stable ad ref ('26R1L7BZG1JK'). This is the ONLY
+        # reliable identity across sweeps: the same ad is also reachable as
+        # /<legacyId>/detail.htm and /annonce/.../<ref>, so identity-by-URL marks
+        # live stock as sold. Removal detection keys on this column.
+        refs = [(l.get("ref"), l["url"]) for l in listings if l.get("ref")]
+        if refs:
+            db.conn.executemany("UPDATE listings SET source_ref=? WHERE url=?", refs)
+            db.conn.commit()
+            print(f"source_ref persisted for {len(refs)} listings")
         db.close()
     except Exception as e:
         print(f"DB upsert failed: {type(e).__name__}: {str(e)[:80]}")
