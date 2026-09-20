@@ -236,6 +236,7 @@ def main():
 
     listings = []
     seen = set()
+    total = None
     # Bandwidth meter: the residential proxy is METERED (1 GB/month), so every
     # sweep prints what it actually cost instead of us guessing.
     bw = {"page": 0, "api": 0, "reqs": 0, "blocked": 0}
@@ -417,6 +418,24 @@ def main():
     out = outdir / "all_listings_api.json"
     out.write_text(json.dumps(listings, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nSaved {len(listings)} unique listings → {out}")
+
+    # Coverage record: `complete` is what makes absence-means-gone valid. Miss
+    # tracking may ONLY use a pass that fetched every result the API reported,
+    # otherwise "not in the sweep" just means "we stopped paginating" and would
+    # mark live stock as sold. (The immeuble pass is complete; the maison pass
+    # deliberately samples 270 of ~3,190.)
+    coverage = {
+        "estate_type": args.estate_type,
+        "total_reported": total,
+        "fetched": len(listings),
+        "complete": bool(total is not None and len(listings) >= total),
+        "pages": args.max_pages,
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    (outdir / "coverage.json").write_text(json.dumps(coverage, indent=1),
+                                          encoding="utf-8")
+    print(f"COVERAGE: estateTypes={args.estate_type} fetched={len(listings)} "
+          f"of {total} → complete={coverage['complete']}")
     tot = bw["page"] + bw["api"]
     print(f"BANDWIDTH: page={bw['page']/1e6:.2f} MB + api={bw['api']/1e6:.2f} MB "
           f"= {tot/1e6:.2f} MB via the metered proxy "

@@ -64,7 +64,7 @@ def fetch_candidates(db, min_surface=MIN_SURFACE, max_surface=MAX_SURFACE,
     rows = db.conn.execute(
         """
         SELECT url, source, title, price_eur, surface_m2, dpe_energy,
-               location, agency, first_seen, http_status
+               location, agency, first_seen, http_status, last_seen
         FROM listings
         WHERE price_eur IS NOT NULL
           AND price_eur BETWEEN ? AND ?
@@ -77,12 +77,13 @@ def fetch_candidates(db, min_surface=MIN_SURFACE, max_surface=MAX_SURFACE,
     ).fetchall()
     out = []
     for r in rows:
-        url, source, title, price, surface, dpe, loc, agency, first_seen, http_status = r
+        url, source, title, price, surface, dpe, loc, agency, first_seen, http_status, last_seen = r
         out.append({
             "url": url, "source": source, "title": title or "",
             "price_eur": price, "surface_m2": surface, "dpe_energy": dpe,
             "location": loc or "", "agency": agency or "",
             "first_seen": first_seen or "",
+            "last_seen": last_seen or "",
             "price_per_m2": round(price / surface, 0) if surface else None,
             "http_status": http_status,
             "alt_urls": [],
@@ -116,7 +117,8 @@ def fetch_candidates(db, min_surface=MIN_SURFACE, max_surface=MAX_SURFACE,
         primary, alts = items[0], items[1:]
         primary["alt_urls"] = [
             {"url": a["url"], "source": a["source"],
-             "http_status": a.get("http_status")} for a in alts
+             "http_status": a.get("http_status"), "last_seen": a.get("last_seen")}
+            for a in alts
         ]
         merged.append(primary)
     return merged
@@ -135,15 +137,31 @@ def render_markdown(cands, n: int, title: str = None) -> str:
         "| # | Price | m² | €/m² | DPE | Town | Link |",
         "|---|-------|----|------|-----|------|------|",
     ]
-    def _vb(s):
-        """⚠ = we could NOT confirm this link is live.
+    def _vb(s, last_seen=None):
+        """⚠ = this link could NOT be confirmed live.
 
-        SeLoger bot-walls automated liveness checks (HTTP 403), so its links can
-        point at withdrawn ads without us ever seeing it — the user clicked
-        straight into two 'Annonce supprimée' pages that way. The listing is
-        real stock, so it is flagged rather than hidden.
+        SeLoger bot-walls direct liveness checks (HTTP 403), so our only proof of
+        life is APPEARING IN A FRESH SWEEP — its BFF search returns live ads only.
+        A SeLoger row seen in the current sweep is therefore verified by
+        construction and must NOT be flagged; only rows we have not re-seen
+        recently stay flagged. (The two 'Annonce supprimée' links that were
+        clicked were SeLoger rows that had not been re-swept for 26 days.)
         """
-        return " ⚠" if s in (403, 429) else ""
+        if s not in (403, 429):
+            return ""
+        if last_seen:
+            try:
+                from datetime import datetime as _dt
+                from datetime import timedelta as _td
+                from datetime import timezone as _tz
+                seen = _dt.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+                if seen.tzinfo is None:
+                    seen = seen.replace(tzinfo=_tz.utc)
+                if _dt.now(_tz.utc) - seen <= _td(days=3):
+                    return ""
+            except (ValueError, TypeError):
+                pass
+        return " ⚠"
 
     for i, r in enumerate(rows, 1):
         town = r["location"] or "–"
@@ -154,20 +172,22 @@ def render_markdown(cands, n: int, title: str = None) -> str:
         # the row (all URLs kept — user requirement, never hide a link).
         if alt:
             extra = " · ".join(
-                f"[{a['source']}{_vb(a.get('http_status'))}]({a['url']})" for a in alt[:3]
+                f"[{a['source']}{_vb(a.get('http_status'), a.get('last_seen'))}]({a['url']})"
+                for a in alt[:3]
             )
             if len(alt) > 3:
                 extra += f" · +{len(alt)-3} more"
             lines.append(
                 f"| {i} | €{r['price_eur']:,} | {r['surface_m2']:,.0f} | "
                 f"**{r['price_per_m2']:,.0f}** | {dpe} | {town} | "
-                f"[{r['source']}{_vb(r.get('http_status'))}]({link}) ⧉ {extra} |"
+                f"[{r['source']}{_vb(r.get('http_status'), r.get('last_seen'))}]"
+                f"({link}) ⧉ {extra} |"
             )
         else:
             lines.append(
                 f"| {i} | €{r['price_eur']:,} | {r['surface_m2']:,.0f} | "
                 f"**{r['price_per_m2']:,.0f}** | {dpe} | {town} | "
-                f"{link}{_vb(r.get('http_status'))} |"
+                f"{link}{_vb(r.get('http_status'), r.get('last_seen'))} |"
             )
     if not rows:
         lines.append("_(no listings match the criteria)_")
