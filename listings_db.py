@@ -181,7 +181,8 @@ def validate_listing(item: dict) -> tuple[dict, list[str]]:
     # Runs AFTER the junk-title cleanup: a DOM-junk title would otherwise hide
     # the land signal. Deliberately high-precision — any building word wins, so
     # "maison avec terrain" is never dropped.
-    if is_land_not_building(it.get("title"), it.get("surface_m2")):
+    if is_land_not_building(it.get("title"), it.get("surface_m2"),
+                            it.get("description")):
         errors.append(f"reject: land/terrain sold as a building: {title[:60]!r}")
         return it, errors
 

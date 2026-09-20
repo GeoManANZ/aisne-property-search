@@ -114,7 +114,8 @@ LAND_OBJECT_RE = _re.compile("|".join(LAND_OBJECT_PATTERNS), _re.I)
 BUILDING_WORD_RE = _re.compile("|".join(BUILDING_WORDS), _re.I)
 
 
-def is_land_not_building(title: str | None, surface_m2: float | None = None) -> bool:
+def is_land_not_building(title: str | None, surface_m2: float | None = None,
+                         description: str | None = None) -> bool:
     """True when the listing's subject is land, not a building.
 
     Two independent signals, both requiring the ABSENCE of a building word:
@@ -128,9 +129,31 @@ def is_land_not_building(title: str | None, surface_m2: float | None = None) -> 
     titles return False rather than guessing.
     """
     t = (title or "").strip()
+    d = (description or "").strip()
+    # Portals emit GENERIC titles for non-building stock: SeLoger listed a building
+    # plot as "Maison à vendre" (ORVILLERS/RIBEMONT/FRIERES, 2026-09-20), so a title
+    # check alone cannot see it. When the title is generic, the description decides.
+    _land_desc = _re.compile(
+        r"\bterrains?\s+(?:à|a)\s+b[âa]tir\b|\bterrains?\s+de\s+loisirs?\b|"
+        r"\bparcelles?\s+(?:cadastrale|constructible)\b|"
+        r"\b(?:vend|vendent|vente\s+d[e']|propose\w*|mise\s+en\s+vente)\b"
+        r"[^.]{0,60}?\bterrains?\b", _re.I)
+    # ...but a house that merely MENTIONS a plot must survive: require that the text
+    # never speaks of living space.
+    _dwelling_desc = _re.compile(
+        r"\bà\s+usage\s+d['’]habitation\b|\bhabitable\b|\bpi[eè]ces?\b|\bchambres?\b"
+        r"|\bm²\s+habitable|\bhabitation\b|\bmaison\b|\bappartement", _re.I)
+    _generic_title = _re.compile(
+        r"^\s*(?:maison|immeuble|appartement|villa|propriété|bien|terrain)"
+        r"\s*(?:à|a)?\s*(?:vendre|d[ée]couvrir)?\s*$", _re.I)
+    land_from_desc = bool(_land_desc.search(d)) and not _dwelling_desc.search(d)
+
     if t and BUILDING_WORD_RE.search(t):
-        return False
+        if not (_generic_title.match(t) and land_from_desc):
+            return False
     if t and LAND_OBJECT_RE.search(t):
+        return True
+    if land_from_desc:
         return True
     if surface_m2 and float(surface_m2) > LAND_SURFACE_CEILING_M2:
         return True          # huge, unnamed = land (a named building returned above)

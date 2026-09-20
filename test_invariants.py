@@ -69,13 +69,24 @@ check("unknown source rejected", any(e.startswith("reject") for e in errs))
 # 112 m², 2 hectares avec étang et bois" — a farmhouse; "Étang privé, verger…"
 # — a €269,900 dwelling). The rule tests the OBJECT of the sale instead, and
 # treats pond/wood/verger as amenities. Cases below are real dept-02 titles.
-for title, surface, want_reject in [
+for _case in [
     ("Terrain à vendre de 4 106,00 m² LIESSE NOTRE DAME (02)", 4106, True),
     ("Terrain À Vendre", 1428, True),
     ("Domaine Forestier 9,6 hectares", 96594, True),
     ("Hutte de chasse", 15912, True),
     ("Ensemble exceptionnel de deux étangs sur plus de 18 000 m²", 18073, True),
     ("Terrain de loisirs avec bungalow", 40, True),
+    # Portal-generic titles: SeLoger sells building plots as "Maison à vendre", so a
+    # title-only rule cannot see them. The DESCRIPTION decides when the title is
+    # generic; a house that merely mentions a plot still survives (dwelling words).
+    ("Maison à vendre", 1275, True,
+     "L'agence ERA vend un terrain à batir de 1275 m2 non viabilisé - centre commune"),
+    ("Maison à vendre", 1000, True,
+     "L'agence ORPI vous propose a la vente un terrain à batir de 1000m2, entièrement clos"),
+    ("Maison à vendre", 1455, False,
+     "Immobilier.notaires® : Maison de ville / village à vendre - un pavillon à usage d'habitation situé à"),
+    ("Maison à vendre", 1000, False,
+     "Propriété à usage d'habitation avec terrain à bâtir attenant de 400 m²"),
     # The anchored `^terrain` pattern only caught land titles that STARTED with
     # the land word, and `loisir\b` never matched the plural. Portals put the
     # commune first, so both holes hit simultaneously on the real title below —
@@ -94,10 +105,14 @@ for title, surface, want_reject in [
     ("Immeuble - 2900 m²", 2900, False),       # real large building, not land
     ("", 70, False),                           # no title -> cannot tell -> keep
 ]:
+    # cases are (title, surface, want_reject[, description]); the description pins the
+    # portal-generic-title trap, which a title-only rule cannot see.
+    title, surface, want_reject = _case[0], _case[1], _case[2]
+    description = _case[3] if len(_case) > 3 else None
     _, errs = validate_listing(
         {"url": "https://www.lesiteimmo.com/acheter/maison-9pieces/x-02650/33556055",
          "source": "lesiteimmo", "price_eur": 85_000, "surface_m2": surface,
-         "title": title})
+         "title": title, "description": description})
     got = any(e.startswith("reject") for e in errs)
     check(f"land rule: {title[:32]!r} ({surface}m2) -> reject={want_reject}",
           got is want_reject)
