@@ -30,7 +30,7 @@ from engine_metrics import record_outcome
 SELOGER_DOMAIN = "www.seloger.com"
 _DEP = config.DEFAULT_DEPARTMENT
 BASE_URL = config.seloger_serp_url(_DEP)
-def build_criteria(estate_type: str = "Building") -> dict:
+def build_criteria(estate_type: str = "Building", distribution_type: str = "Buy") -> dict:
     """SeLoger BFF search model.
 
     estateTypes accepts ONE value per request, so a portal-wide sweep needs a
@@ -43,7 +43,7 @@ def build_criteria(estate_type: str = "Building") -> dict:
         "featuresIncluded": [], "projectTypes": ["New_Build", "Resale"],
         "buildState": [], "locationsInBuildingIncluded": [],
         "locationsInBuildingExcluded": [], "energyCertificateClass": [],
-        "distributionTypes": ["Buy"], "estateTypes": [estate_type],
+        "distributionTypes": [distribution_type], "estateTypes": [estate_type],
         "location": {"placeIds": [_DEP["place_id"]]}, "texts": [],
     }
 
@@ -228,8 +228,18 @@ def main():
     # coverage costs a handful of pages instead of ~107 (~30 MB of proxy).
     ap.add_argument("--extra-criteria", default=None,
                     help='JSON merged into "criteria", e.g. \'{"priceRange":{"min":10000,"max":220000}}\'')
+    ap.add_argument("--distribution-type", default="Buy", choices=["Buy", "Rent"],
+                    help="Buy (sale) or Rent — the other BFF axis. Rents are what turn "
+                         "a cheap building into a measurable yield.")
+    # Bandwidth discipline: when a deep pass dies partway (the BFF stopped answering
+    # at page 101 of a 108-page House sweep), re-fetching 100 pages to recover 8 is
+    # 99% waste. --start-page resumes, --merge unions the new results with the
+    # existing file so coverage is assessed over the whole result set.
+    ap.add_argument("--start-page", type=int, default=1)
+    ap.add_argument("--merge", action="store_true",
+                    help="union new results with the existing all_listings_api.json")
     args = ap.parse_args()
-    criteria = build_criteria(args.estate_type)
+    criteria = build_criteria(args.estate_type, args.distribution_type)
     if args.extra_criteria:
         import json as _json
         extra = _json.loads(args.extra_criteria)
@@ -246,6 +256,13 @@ def main():
 
     listings = []
     seen = set()
+    if args.merge:
+        prev = outdir / "all_listings_api.json"
+        if prev.exists():
+            listings = json.loads(prev.read_text())
+            seen = {l["url"] for l in listings}
+            print(f"MERGE: carrying {len(listings)} listings from the previous pass",
+                  flush=True)
     total = None
     # Bandwidth meter: the residential proxy is METERED (1 GB/month), so every
     # sweep prints what it actually cost instead of us guessing.
@@ -339,7 +356,7 @@ def main():
 
                 # ---- API sweep from inside the browser context ----
                 total = None
-                for pnum in range(1, args.max_pages + 1):
+                for pnum in range(args.start_page, args.max_pages + 1):
                     payload = {"criteria": criteria,
                                "paging": {"page": pnum, "size": 30, "order": "Default"}}
                     try:
@@ -450,6 +467,13 @@ def main():
     print(f"BANDWIDTH: page={bw['page']/1e6:.2f} MB + api={bw['api']/1e6:.2f} MB "
           f"= {tot/1e6:.2f} MB via the metered proxy "
           f"({bw['reqs']} API calls, {bw['blocked']} asset requests blocked)")
+    if args.distribution_type != "Buy":
+        # Structural guard, not a flag somebody can forget: rents must NEVER reach
+        # the sale listings table, where a EUR700/month rent would be read as a
+        # EUR700 sale price and rank as the best deal in Aisne.
+        print(f"DB upsert: SKIPPED — {args.distribution_type} pass. Rents go to the "
+              f"rents table via ingest_rents.py, never into listings.")
+        return 0
     try:
         from listings_db import ListingsDB
         db = ListingsDB(Path(__file__).parent / "listings.db")

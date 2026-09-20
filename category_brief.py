@@ -19,6 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import categorize
+try:
+    from ingest_rents import load_benchmarks as _load_rent_bench, town_key as _town_key
+except Exception:                      # noqa: BLE001 - rents are optional enrichment
+    _load_rent_bench = _town_key = None
 
 HERE = Path(__file__).parent
 
@@ -102,6 +106,17 @@ def main() -> int:
 
     now = datetime.now(timezone.utc)
 
+    # Rent benchmarks -> gross yield. Which band applies depends on the implied
+    # letting strategy: a multi-unit immeuble is let as FLATS (mid band), while a
+    # single large dwelling is let as one house (large band). Using one commune-wide
+    # €/m² rate for both would badly overstate the house.
+    rentbench = {}
+    if _load_rent_bench:
+        try:
+            rentbench = _load_rent_bench(con)
+        except Exception:              # noqa: BLE001
+            rentbench = {}
+
     lanes: dict[str, int] = {}
     for i in items:
         lanes[i["cat"]] = lanes.get(i["cat"], 0) + 1
@@ -140,6 +155,25 @@ def main() -> int:
         if i.get("also_on"):
             facts.append("also listed on " + ", ".join(sorted(set(i["also_on"]))))
         print(f"   {' · '.join(facts)}")
+
+        # yield, only where a real rent benchmark exists
+        if rentbench and i["cat"] in ("yield", "commercial", "renovation", "livein"):
+            tk = _town_key(i["location"])
+            bands = rentbench.get(tk) or rentbench.get("_all") or {}
+            basis = "commune" if rentbench.get(tk) else "dept-wide (no commune rate)"
+            want = ["mid", "small"] if i["cat"] == "yield" else ["large", "mid"]
+            pick = next(((b, bands[b]) for b in want if b in bands), None)
+            if pick and i["surface_m2"]:
+                band, (rate, nobs) = pick
+                rent = rate * i["surface_m2"]
+                gross = 12 * rent / i["price_eur"] * 100
+                print(f"   rent model: €{rent:,.0f}/month (surface x €{rate:.2f}/m²/mo, "
+                      f"{band} band, n={nobs}, {basis})")
+                print(f"   gross yield: {gross:.1f}%  → net after taxe foncière, charges, "
+                      f"vacancy & management ≈ {gross*0.65:.1f}-{gross*0.75:.1f}% "
+                      f"(typical drag, not measured)")
+            else:
+                print("   rent model: no rent benchmark for this area — yield not estimated")
         print(f"   {i['url']}")
         print()
 
