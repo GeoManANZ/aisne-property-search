@@ -129,7 +129,20 @@ def classify(title: str | None, description: str | None, dpe: str | None = None,
             category = pref
             break
 
+    # MIXED-USE is the mandate, not an edge case: "immeuble de rapport composé d'un
+    # local commercial et 3 appartements". The plain tie-break files that under
+    # 'commercial' (own-exit-risk framing), when the asset's exit is really the
+    # residential rent roll. Surfaced by the century21 enrichment, where this
+    # mislabelled 50+ dept-02 buildings as purely commercial.
+    _living = re.search(r"\bappartements?|\blogements?|\bhabitation\b|\bpi[eè]ces?\b", text)
+    _commercial = re.search(r"\blocal commercial|\bcommerce\b|\bboutique\b|\bbureaux?\b", text)
+    mixed_use = bool(_living and _commercial)
+    if mixed_use and scores.get("yield"):
+        category = "yield"
+
     flags = sorted(k for k, v in scores.items() if k != category and v >= 2)
+    if mixed_use:
+        flags = sorted(set(flags) | {"commercial", "mixed_use"})
     conf = "high" if top >= 6 else "medium" if top >= 3 else "low"
     return {"category": category, "confidence": conf, "flags": flags,
             "scores": dict(scores), "why": {k: v[:3] for k, v in why.items()}}

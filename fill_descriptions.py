@@ -35,7 +35,11 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
 # Sources that serve the description in server-side HTML on a direct fetch.
-DETAIL_SOURCES = ("iad", "fnaim")
+# century21 added 2026-09-26: its SEARCH cards carry only a truncated teaser, but
+# the detail page exposes the full text via og:description/meta (verified, 545
+# chars) — and that text names the asset ("immeuble de rapport", "local
+# commercial", "3 appartements"), which is what the categoriser needs.
+DETAIL_SOURCES = ("iad", "fnaim", "century21")
 
 
 def _clean(s: str) -> str:
@@ -88,6 +92,12 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="0 = all missing")
     ap.add_argument("--workers", type=int, default=5)
     ap.add_argument("--min-len", type=int, default=40)
+    # Enrich mode: the default selection only fills EMPTY descriptions, so a
+    # truncated card teaser is never improved — which is why 30% of century21
+    # rows classify as 'unclassified' despite being 100% "described". This
+    # refetches short descriptions and keeps the longer of the two.
+    ap.add_argument("--enrich-below", type=int, default=0,
+                    help="also refetch descriptions shorter than N chars (0 = off)")
     args = ap.parse_args()
 
     con = sqlite3.connect(DB)
@@ -97,7 +107,10 @@ def main() -> int:
     ph = ",".join("?" * len(args.sources))
     sql = (f"SELECT url, source, title FROM listings "
            f"WHERE status='active' AND source IN ({ph}) "
-           f"AND (description IS NULL OR description='')")
+           f"AND (description IS NULL OR description=''")
+    if args.enrich_below:
+        sql += f" OR LENGTH(description) < {int(args.enrich_below)}"
+    sql += ")"
     if args.limit:
         sql += f" LIMIT {args.limit}"
     rows = con.execute(sql, args.sources).fetchall()
@@ -123,6 +136,15 @@ def main() -> int:
                 short += 1
                 print(f"  thin {r['source']:<6} {(r['title'] or '')[:34]:<34} "
                       f"(got {len(desc)} chars)", flush=True)
+                continue
+            prev_len = con.execute(
+                "SELECT LENGTH(COALESCE(description,'')) FROM listings WHERE url=?",
+                (r["url"],)).fetchone()[0] or 0
+            if len(desc) <= prev_len:
+                # Never shorten: a shorter fetch is a worse page (consent wall,
+                # partial render), not new information.
+                print(f"  keep {r['source']:<6} existing {prev_len} >= fetched "
+                      f"{len(desc)}", flush=True)
                 continue
             con.execute("UPDATE listings SET description=? WHERE url=?", (desc, r["url"]))
             con.execute("INSERT INTO listing_events (url, source, observed_at, event, note)"
