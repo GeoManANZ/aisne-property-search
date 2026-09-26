@@ -51,7 +51,7 @@ _FIELDS = [
 # that don't match (town/category pages, generic search URLs, JS-fragment
 # titles, absurd prices) are the junk that polluted earlier rankings.
 
-_VALID_SOURCES = {"fnaim", "iad", "paruvendu", "seloger", "orpi", "superimmo", "logicimmo", "lesiteimmo"}
+_VALID_SOURCES = {"fnaim", "iad", "paruvendu", "seloger", "orpi", "superimmo", "logicimmo", "lesiteimmo", "century21"}
 _VALID_DPE = {"A", "B", "C", "D", "E", "F", "G"}
 
 
@@ -90,6 +90,11 @@ def _url_is_individual(url: str, source: str) -> bool:
         return (bool(re.search(r"/(\d{6,12})/detail\.htm", url))
                 or "/annonce/" in url
                 or "/wl-cdp/" in url)
+    if source == "century21":
+        # detail: /trouver_logement/detail/<digits>/ — the search pages share
+        # /annonces/... and must never pass as individual properties.
+        import re
+        return bool(re.search(r"/trouver_logement/detail/\d+/?$", url))
     return True  # other sources: no strict rule
 
 

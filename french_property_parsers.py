@@ -636,11 +636,138 @@ def parse_lesiteimmo(html: str, source_url: str) -> list[dict]:
 # LADDER — crawl FNAIM + IAD + ParuVendu in sequence
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# CENTURY 21 (century21.fr) — server-rendered HTML, DIRECT egress
+# ---------------------------------------------------------------------------
+# Reachable from the VPS with HTTP 200 and NO proxy and NO captcha, so this
+# source costs zero metered bandwidth.  Card anatomy verified against a saved
+# page (2026-09-20):
+#   <div class="c-the-property-thumbnail-with-content js-…" data-uid="16937251427">
+#     <a href="/trouver_logement/detail/16937251427/" aria-label="Maison à vendre CHATEAU THIERRY">
+#     <div class="…-text-theme-heading-4 …">  CHATEAU THIERRY&nbsp;  02
+#        <br /> 117,50 m<sup>2</sup>, 6 pièces
+#        <div class="tw-text-c21-gold-darker">Ref : 6721</div></div>
+#     <div class="c-text-theme-heading-3 …">Maison à vendre</div>
+#     <div class="c-text-theme-heading-1 …">  197 000&nbsp;&euro;  </div>
+#     <div class="c-text-theme-base tw-truncate-safe">Description…</div>
+# TWO ENCODING TRAPS, both of which have cost us parsing on other portals:
+#   * the price is `&nbsp;&euro;` — an ENTITY, not the € glyph (this exact bug
+#     zeroed every FNAIM price);
+#   * the surface is `117,50 m<sup>2</sup>` — comma decimal AND a superscript
+#     tag between the m and the 2.
+# Pagination is PATH-based (/page-2/), see PAGINATION_STYLE.
+C21_CARD_RE = re.compile(
+    r'<div class="c-the-property-thumbnail-with-content js-the-property-thumbnail-with-content'
+    r'(.*?)(?=<div class="c-the-property-thumbnail-with-content js-|\Z)', re.S)
+C21_META_RE = re.compile(
+    r'-text-theme-heading-4[^>]*>(.*?)<div class="tw-text-c21-gold-darker"', re.S)
+C21_PRICE_RE = re.compile(
+    r'c-text-theme-heading-1[^>]*>\s*([\d][\d\s\u00a0\u202f.,]*?)\s*&nbsp;&euro;')
+C21_REF_RE = re.compile(r"Ref\s*:\s*([A-Za-z0-9][A-Za-z0-9\-]*)")
+C21_LINK_RE = re.compile(
+    r'<a href="(/trouver_logement/detail/(\d+)/)"\s+aria-label="([^"]*)"')
+C21_TYPE_RE = re.compile(r"c-text-theme-heading-3[^>]*>\s*([^<]+?)\s*<")
+C21_DESC_RE = re.compile(r'c-text-theme-base tw-truncate-safe">\s*(.*?)\s*</div>', re.S)
+
+
+def _c21_strip_tags(s: str) -> str:
+    import html as _h
+    return _h.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", s or ""))).strip()
+
+
+def _c21_int(raw: str) -> int | None:
+    """'197 000' -> 197000.  Thousands separators (incl. nbsp) are noise."""
+    d = re.sub(r"[^\d]", "", raw or "")
+    return int(d) if d else None
+
+
+def _c21_float(raw: str) -> float | None:
+    """'117,50' -> 117.5 (French decimal comma); '1 275' -> 1275.0."""
+    t = re.sub(r"[\s\u00a0\u202f]", "", raw or "").replace(",", ".")
+    try:
+        return float(t)
+    except ValueError:
+        return None
+
+
+def parse_century21(html: str, source_url: str) -> list[dict]:
+    """Parse a century21.fr search page → property dicts.
+
+    The card shows the LIVING surface (the detail page distinguishes surface
+    habitable / terrain), so the usual ingest land rule still applies.
+    """
+    import html as _h
+    results = []
+    for m in C21_CARD_RE.finditer(html):
+        card = m.group(1)
+        link = C21_LINK_RE.search(card)
+        if not link:
+            continue
+        path, uid, aria = link.group(1), link.group(2), _h.unescape(link.group(3))
+
+        meta = C21_META_RE.search(card)
+        meta_txt = _c21_strip_tags(meta.group(1)) if meta else ""
+        surface = rooms = None
+        sm = re.search(r"([\d][\d\s\u00a0\u202f]*[.,]?\d*)\s*m\s*2", meta_txt)
+        if sm:
+            raw = sm.group(1)
+            # The dept code sits between the town and the surface — "CHATEAU
+            # THIERRY  02  117,50 m²" — and a greedy digit-run swallows it,
+            # silently turning 117,50 into 02117,50 = 2117.5 m². Drop a leading
+            # FRENCH DEPT-shaped token (01-95, or 97x) when present; a plain
+            # thousands separator ("1 275") must survive as one number.
+            toks = raw.split()
+            if len(toks) > 1 and re.fullmatch(r"0[1-9]|[1-9]\d|97\d", toks[0]):
+                raw = " ".join(toks[1:])
+            surface = _c21_float(raw)
+            # Belt and braces: portals have no business stating a 3,000 m²
+            # dwelling, and an inflated surface corrupts €/m² for every
+            # downstream ranking. Reject rather than publish a wrong figure.
+            if surface is not None and not (10 <= surface <= 3000):
+                surface = None
+        rm = re.search(r"(\d+)\s*pi[eè]ce", meta_txt)
+        if rm:
+            rooms = int(rm.group(1))
+        # 'CHATEAU THIERRY  02  117,50 m2 …' -> city is everything before the surface
+        city = _h.unescape(meta_txt[:sm.start()] if sm else meta_txt)
+        city = re.sub(r"\s+\d{2,3}\s*$", "", city).strip()
+
+        pm = C21_PRICE_RE.search(card)
+        ref = C21_REF_RE.search(card)
+        ty = C21_TYPE_RE.search(card)
+        desc = C21_DESC_RE.search(card)
+
+        listing = {
+            "source": "century21",
+            "url": f"https://www.century21.fr{path}",
+            "title": f"{(ty.group(1).strip() if ty else aria)} {city}".strip(),
+            "price_eur": _c21_int(pm.group(1)) if pm else None,
+            "surface_m2": surface,
+            "location": city,
+            "description": _c21_strip_tags(desc.group(1)) if desc else "",
+            # JSON-encode: sqlite3 cannot bind a list/dict and the column is TEXT.
+            # This matches the representation the other sources store.
+            "features": json.dumps([f"{rooms} pièces"] if rooms else [],
+                                   ensure_ascii=False),
+            "tags": json.dumps({"c21_uid": uid,
+                                "c21_ref": ref.group(1) if ref else None,
+                                "exclusive": "exclusivity-banner" in card},
+                               ensure_ascii=False),
+            "source_page": source_url,
+            "parsed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if listing["price_eur"] and surface:
+            listing["price_per_m2"] = round(listing["price_eur"] / surface, 0)
+        results.append(listing)
+    return results
+
+
 PARSERS = {
     "fnaim": parse_fnaim,
     "iad": parse_iad,
     "paruvendu": parse_paruvendu,
     "lesiteimmo": parse_lesiteimmo,
+    "century21": parse_century21,
     # NOTE: SeLoger is intentionally NOT wired into the ladder.  It is a JS
     # SPA behind DataDome; the definitive path is seloger_api_sweep.py
     # (BFF API).  The old DOM card parsers were removed — do not go looking
@@ -673,12 +800,23 @@ SOURCE_URLS = {
         "https://www.lesiteimmo.com/acheter/immeuble/aisne-02",
         "https://www.lesiteimmo.com/acheter/maison/aisne-02",
     ),
+    # century21.fr — DIRECT egress, server-rendered, no proxy or captcha needed.
+    # Dept-wide paths; the report's >=150 m² / <=EUR220k filters do the narrowing.
+    "century21": (
+        "https://www.century21.fr/annonces/achat-maison/d-02_aisne/",
+        "https://www.century21.fr/annonces/achat-appartement/d-02_aisne/",
+        "https://www.century21.fr/annonces/achat-immeuble/d-02_aisne/",
+    ),
 }
 
 # ParuVendu is the odd one out: its pagination param is ?p=N, not ?page=N
 # (verified 2026-08-26: ?page=2 silently returns page 1 → the ladder stopped
 # after page 1 and missed ~100 immeubles on the dept-wide page).
 PAGINATION_PARAM = {"paruvendu": "p"}
+
+# Century 21 paginates in the PATH — /annonces/achat-maison/d-02_aisne/page-2/ —
+# not with a query string, so it needs its own URL builder (see ladder()).
+PAGINATION_STYLE = {"century21": "path"}
 
 def _lsi_town_slugs() -> set[str]:
     """Distinct lesiteimmo town slugs already known in listings.db."""
@@ -716,7 +854,7 @@ def ladder(
     Returns dict with per-source results and consolidated listings.
     """
     if sources is None:
-        sources = ["fnaim", "iad", "paruvendu", "lesiteimmo"]
+        sources = ["fnaim", "iad", "paruvendu", "lesiteimmo", "century21"]
     if scan_details_for is None:
         scan_details_for = []
 
@@ -758,12 +896,20 @@ def ladder(
             seen_urls = set()
             last_html = ""  # last SUCCESSFUL page body (for raw-html save)
             for base_url in base_urls:
-                cat = base_url.rsplit("/", 2)[-2]  # e.g. 'immeuble'/'maison'
+                cat = base_url.rstrip("/").rsplit("/", 2)[-2]  # 'maison'/'immeuble'/'achat-maison'
                 page = 1
                 max_pages = 30  # hard safety stop (lesiteimmo maison has 14+)
                 page_param = PAGINATION_PARAM.get(source, "page")
+                page_style = PAGINATION_STYLE.get(source, "query")
                 while page <= max_pages and len(listings) < max_listings_per_source:
-                    url = base_url if page == 1 else f"{base_url}{'&' if '?' in base_url else '?'}{page_param}={page}"
+                    if page == 1:
+                        url = base_url
+                    elif page_style == "path":
+                        # century21 puts the page in the PATH:
+                        # /annonces/achat-maison/d-02_aisne/page-2/
+                        url = f"{base_url.rstrip('/')}/page-{page}/"
+                    else:
+                        url = f"{base_url}{'&' if '?' in base_url else '?'}{page_param}={page}"
                     html, fetch_err = fetch_page(url, timeout=30)
                     if fetch_err == "end":
                         # 404/410 on a paginated URL = no more pages.  This is
@@ -981,7 +1127,7 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit(1)
 
-    if args.command in ("fnaim", "iad", "paruvendu", "lesiteimmo"):
+    if args.command in ("fnaim", "iad", "paruvendu", "lesiteimmo", "century21"):
         src = args.command
         url = args.url or SOURCE_URLS.get(src)
         if not url:
