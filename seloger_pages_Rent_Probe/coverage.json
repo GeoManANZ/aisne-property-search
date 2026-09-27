@@ -1,0 +1,12 @@
+{
+ "estate_type": "Apartment",
+ "distribution_type": "Rent",
+ "total_reported": null,
+ "fetched": 0,
+ "shortfall": 0,
+ "exhausted_pagination": true,
+ "complete": false,
+ "pages": 1,
+ "start_page": 1,
+ "at": "2026-09-27T03:52:04+00:00"
+}

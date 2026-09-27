@@ -39,10 +39,15 @@ def main() -> int:
         f" AND status='active' AND surface_m2 BETWEEN {MIN_SURF} AND {MAX_SURF}"
         f" AND price_eur BETWEEN {MIN_PRICE} AND {MAX_PRICE}").fetchone()[0]
     print(f"  {n_new} new criteria-matching listing(s)")
+    # Same filters as the headline above. This breakdown used to omit them, so it
+    # printed 5,439 rows under a headline of 602 — the numbers visibly contradicted
+    # each other and the report carried the inconsistency to the user.
     for r in con.execute(
             f"SELECT source, COUNT(*) n FROM listings"
             f" WHERE first_seen >= datetime('now','-{d} day')"
-            f" AND status='active' GROUP BY 1 ORDER BY 2 DESC"):
+            f" AND status='active' AND surface_m2 BETWEEN {MIN_SURF} AND {MAX_SURF}"
+            f" AND price_eur BETWEEN {MIN_PRICE} AND {MAX_PRICE}"
+            f" GROUP BY 1 ORDER BY 2 DESC"):
         print(f"    {r['source']:<11} {r['n']}")
 
     print()
