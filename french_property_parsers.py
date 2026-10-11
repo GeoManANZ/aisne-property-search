@@ -840,12 +840,105 @@ def _lsi_town_slugs() -> set[str]:
 OUTPUT_DIR = Path(config.PROJECT_ROOT) / "scans"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Single list. The CLI --sources default and ladder() must both use THIS —
+# they drifted, and the cron invocation (no --sources flag) silently dropped
+# century21 on every run while ladder()'s own default still named it.
+LADDER_SOURCES = ["fnaim", "iad", "paruvendu", "lesiteimmo", "century21"]
+
+
+def _lesiteimmo_town_sweep(towns, parser, seen_urls, listings, *,
+                           workers: int = 4, budget_s: float = 600,
+                           timeout: int = 15) -> dict:
+    """Parallel, time-boxed, rotated lesiteimmo per-town crawl.
+
+    The department index truncates (hard stop at 30 pages, and it 502s), so
+    this sweep is what actually covers the department. It used to be one
+    request at a time plus ``delay_s`` sleep. Measured:
+
+      2026-09-16  621 towns   1307s
+      2026-09-20  802 towns   1704s
+      2026-10-01  963 towns   3366s   ← cron budget is 3600s
+
+    The slug set only grows (every new listing adds a town), so the next
+    sequential run is slower than the one that already timed out and killed
+    SeLoger, description-fill and liveness. A hard budget plus rotation means
+    a partial sweep still returns, and the towns skipped this run are first
+    next fortnight — not the same alphabetical tail forever.
+    """
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+
+    towns = list(towns)
+    note = {"done": 0, "errors": 0, "skipped": 0, "extra": 0,
+            "partial": False, "towns": len(towns)}
+    if not towns:
+        return note
+    shift = int(time.time() // (14 * 86400)) % len(towns)
+    towns = towns[shift:] + towns[:shift]
+    deadline = time.monotonic() + budget_s
+    before = len(listings)
+    i = 0
+    batch = max(workers * 2, workers)
+
+    def one(slug: str):
+        url = f"https://www.lesiteimmo.com/acheter/maison/{slug}"
+        html, err = fetch_page(url, timeout=timeout)
+        return url, html, err
+
+    def _take(fut) -> None:
+        note["done"] += 1
+        try:
+            url, html, err = fut.result()
+        except Exception:
+            note["errors"] += 1
+            return
+        if err or not html:
+            note["errors"] += 1
+            return
+        for listing in parser(html, url):
+            if listing["url"] not in seen_urls:
+                seen_urls.add(listing["url"])
+                listings.append(listing)
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        inflight: dict = {}
+        while i < len(towns) or inflight:
+            while (i < len(towns) and len(inflight) < batch
+                   and time.monotonic() < deadline):
+                inflight[ex.submit(one, towns[i])] = towns[i]
+                i += 1
+            if not inflight:
+                break
+            if time.monotonic() >= deadline:
+                break
+            finished, _ = wait(
+                set(inflight),
+                timeout=max(0.05, deadline - time.monotonic()),
+                return_when=FIRST_COMPLETED,
+            )
+            if not finished:
+                break
+            for fut in finished:
+                inflight.pop(fut, None)
+                _take(fut)
+        if inflight:
+            # Already running — cancel() does not stop them. Drain once.
+            finished, _ = wait(set(inflight), timeout=timeout + 5)
+            for fut in finished:
+                inflight.pop(fut, None)
+                _take(fut)
+    note["extra"] = len(listings) - before
+    note["skipped"] = max(0, len(towns) - note["done"])
+    note["partial"] = note["skipped"] > 0
+    return note
+
 
 def ladder(
     sources: list[str] = None,
     max_listings_per_source: int = 200,
     scan_details_for: list[str] = None,  # "all" or list of source names
     delay_s: float = 2.0,
+    town_budget_s: float = 600,
+    town_workers: int = 4,
 ) -> dict:
     """
     Crawl FNAIM + IAD + ParuVendu + lesiteimmo search pages, extract all
@@ -854,7 +947,7 @@ def ladder(
     Returns dict with per-source results and consolidated listings.
     """
     if sources is None:
-        sources = ["fnaim", "iad", "paruvendu", "lesiteimmo", "century21"]
+        sources = list(LADDER_SOURCES)
     if scan_details_for is None:
         scan_details_for = []
 
@@ -864,6 +957,7 @@ def ladder(
 
     all_results = {}
     consolidated = []
+    town_note = None
     log_lines = [
         f"=== Ladder crawl {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')} ===",
         f"Sources: {', '.join(sources)}",
@@ -940,28 +1034,25 @@ def ladder(
             unique = listings
 
             # --- TOWN SWEEP (lesiteimmo only) -----------------------------
-            # The department search sometimes omits live listings (stale
-            # index).  Re-crawl per-town pages for every town already known,
-            # which surfaces those stragglers.
+            # Department search truncates (30-page cap, and it 502s). The
+            # per-town pass is the real coverage, but it must not be allowed
+            # to consume the cron's whole hour — see _lesiteimmo_town_sweep.
             if source == "lesiteimmo":
                 try:
                     towns = sorted(_lsi_town_slugs())
                 except Exception:
                     towns = []
-                log_lines.append(f"  town sweep: {len(towns)} known town slugs")
-                before = len(listings)
-                for slug in towns:
-                    turl = f"https://www.lesiteimmo.com/acheter/maison/{slug}"
-                    try:
-                        thtml = fetch(turl, timeout=30)
-                        for l in parser(thtml, turl):
-                            if l["url"] not in seen_urls:
-                                seen_urls.add(l["url"])
-                                listings.append(l)
-                    except Exception:
-                        continue
-                    time.sleep(delay_s)
-                log_lines.append(f"  town sweep: +{len(listings) - before} extra listings")
+                town_note = _lesiteimmo_town_sweep(
+                    towns, parser, seen_urls, listings,
+                    workers=town_workers, budget_s=town_budget_s,
+                )
+                flag = "PARTIAL " if town_note["partial"] else ""
+                log_lines.append(
+                    f"  town sweep: {flag}{town_note['done']}/{town_note['towns']} "
+                    f"towns in <={town_budget_s:.0f}s "
+                    f"(+{town_note['extra']} listings, {town_note['errors']} errors, "
+                    f"{town_note['skipped']} skipped)"
+                )
 
             unique = listings
             all_results[source] = {
@@ -1088,6 +1179,7 @@ def ladder(
         "consolidated": slim,
         "scanned_details": scanned if scan_details_for else [],
         "log_path": str(out_dir / "ladder_log.txt"),
+        "town_sweep": town_note,
     }
 
 
@@ -1104,7 +1196,9 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(dest="command")
 
     # Per-source commands (SeLoger excluded — use seloger_api_sweep.py)
-    for src in ["fnaim", "iad", "paruvendu", "lesiteimmo"]:
+    for src in LADDER_SOURCES:
+        if src == "century21":
+            continue  # no single-page CLI; crawled only via ladder
         sp = subparsers.add_parser(src, help=f"Parse {src} search page")
         sp.add_argument("--url", help="Override default URL")
         sp.add_argument("--max", type=int, default=200, help="Max listings to extract")
@@ -1114,12 +1208,16 @@ if __name__ == "__main__":
     # Ladder command
     lp = subparsers.add_parser("ladder", help="Crawl all sources in sequence")
     lp.add_argument("--sources", nargs="+",
-                    default=["fnaim", "iad", "paruvendu", "lesiteimmo"],
+                    default=list(LADDER_SOURCES),
                     help="Which sources to crawl")
     lp.add_argument("--max", type=int, default=200, help="Max listings per source")
     lp.add_argument("--detail-scan", nargs="?", const="all", default=None,
                     help="Scan detail pages: 'all' or list of source names (fnaim iad paruvendu)")
     lp.add_argument("--delay", type=float, default=2.0, help="Delay between requests (s)")
+    lp.add_argument("--town-budget", type=float, default=600,
+                    help="Hard seconds for the lesiteimmo town sweep (cron is 3600s)")
+    lp.add_argument("--town-workers", type=int, default=4,
+                    help="Parallel fetches for the town sweep")
 
     args = parser.parse_args()
 
@@ -1206,6 +1304,8 @@ if __name__ == "__main__":
             max_listings_per_source=args.max,
             scan_details_for=scan_details_for,
             delay_s=args.delay,
+            town_budget_s=args.town_budget,
+            town_workers=args.town_workers,
         )
 
         print(f"\n=== RESULTS ===")
@@ -1215,6 +1315,10 @@ if __name__ == "__main__":
             count = data.get("listings_count", 0) if isinstance(data, dict) else 0
             err = data.get("error", "") if isinstance(data, dict) else ""
             print(f"  {src:10s}: {count} listings  {'⚠ ' + err if err else ''}")
+        tw = result.get("town_sweep") or {}
+        if tw.get("partial"):
+            print(f"⚠️ TOWN SWEEP PARTIAL: {tw['done']}/{tw['towns']} towns, "
+                  f"{tw['skipped']} skipped (time box). Later stages still run.")
 
         if result["scanned_details"]:
             print(f"\nScanned {len(result['scanned_details'])} detail pages")
