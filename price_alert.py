@@ -136,7 +136,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=config.PRICE_ALERT["days_window"])
     ap.add_argument("--min-pct", type=float, default=config.PRICE_ALERT["min_pct"],
-                    help="Only report drops >= this % (default: all)")
+                    help="Only report drops at or above this percent. Default: all.")
     ap.add_argument("--out", default=None, help="Write message to file (for delivery)")
     ap.add_argument("--json", action="store_true", help="Print JSON drops instead of text")
     ap.add_argument("--silent-if-none", action="store_true",
@@ -170,6 +170,11 @@ def main():
 
     if args.silent_if_none and not drops:
         # no drops → silent (empty stdout = no delivery for no_agent cron)
+        return
+
+    if not drops:
+        # Cron runs this file with no flags. The job contract is silent when
+        # there is nothing new — a daily "no drops" line is a negative output.
         return
 
     msg = format_alert(drops)
