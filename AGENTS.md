@@ -104,6 +104,21 @@ via the sweep script or manually through `bulk_upsert_validated`.
   silent unless genuine drops. Cron copy at `/opt/data/scripts/aisne_price_alert.py`
   — keep in sync after editing `price_alert.py`.
 - **Aisne Weekly Recommendations** (`2a6b4b15dfb1`) — Mondays 08:00 UTC, Telegram MEDIA.
+  - Run `weekly_brief.py` (NOT `category_brief.py` directly, NOT
+    `recommendations_report.py`): it copies `listings.db` to `.weekly_tmp.db`,
+    marks land-advert rows and land-surface rows (features tag `m² de terrain`
+    equal to the stored `surface_m2`) as `excluded_land_surface` on the COPY,
+    then renders `category_brief.py` against the copy. The live DB is never
+    modified. Expect ~76 rows excluded (24 land adverts + 52 land-surface).
+  - Always run `verify_weekly.py` afterwards; it must print `PROBLEMS: 0`.
+  - **Why the wrapper exists**: `category_brief.py` ranks by cheapest €/m² using
+    the STORED surface. SeLoger writes land area into `surface_m2` for ~52 rows
+    and tags it `m² de terrain` in `features`, so raw output ranks a 134 m²
+    Guise house as 925 m² at €89/m². The stored `description` is truncated to
+    202 chars, so an agent CANNOT recover the true surface from the DB — never
+    quote a building m² that is not in the generated file.
+  - Border spill-over into neighbouring depts (Reims 51, Berlaimont 59) is
+    ACCEPTED — user decision, no postcode guard. Not a bug.
 
 ## Known state & quirks
 - DB ≈3,300+ rows (ParuVendu 309 after dept-wide fix), ~424+ distinct candidates
