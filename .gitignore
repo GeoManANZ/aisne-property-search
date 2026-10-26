@@ -34,3 +34,6 @@ data/dvf/
 data/*.json
 listings.db-shm
 listings.db-wal
+
+# weekly_brief.py scratch copy of listings.db (~82 MB) — regenerated each run
+.weekly_tmp.db
